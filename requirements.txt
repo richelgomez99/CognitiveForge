@@ -1,0 +1,27 @@
+# Core Dependencies - Tier 1
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-google-genai>=2.0.0
+google-genai>=0.3.0  # New unified SDK for Gemini (replaces google-generativeai)
+pydantic>=2.0.0
+neo4j>=5.0.0
+python-dotenv>=1.0.0
+langchain-neo4j>=0.1.0
+langchain-community>=0.3.0
+
+# Testing
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+
+# Tier 2 Dependencies
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+sse-starlette>=2.0.0
+streamlit>=1.40.0
+requests>=2.32.0
+langgraph-checkpoint-sqlite>=0.1.0
+
+# Development Tools
+black>=24.0.0
+ruff>=0.6.0
+
