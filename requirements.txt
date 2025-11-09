@@ -21,6 +21,11 @@ streamlit>=1.40.0
 requests>=2.32.0
 langgraph-checkpoint-sqlite>=0.1.0
 
+# Knowledge Discovery Engine
+arxiv>=0.8.0
+semanticscholar>=0.8.0
+sentence-transformers>=5.1.0  # Tier 1: Semantic similarity for memory-based rejection
+
 # Development Tools
 black>=24.0.0
 ruff>=0.6.0
