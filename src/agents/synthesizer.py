@@ -69,8 +69,77 @@ def synthesizer_node(state: AgentState) -> Dict[str, Any]:
     
     logger.info(f"Aggregated {len(evidence_urls)} unique evidence sources")
     
-    # Construct synthesis prompt
-    prompt = f"""You are an expert research synthesizer tasked with integrating diverse perspectives into novel insights.
+    # T089: Check synthesis mode for circular argument handling
+    synthesis_mode = state.get("synthesis_mode", "standard")
+    logger.info(f"Synthesis mode: {synthesis_mode}")
+    
+    # Construct synthesis prompt based on mode
+    if synthesis_mode == "impasse":
+        # T089: Impasse mode - circular argument detected
+        logger.info("🔄 Generating impasse synthesis (circular argument detected)")
+        
+        # Extract previous claims from debate memory
+        debate_memory = state.get("debate_memory")
+        previous_claims = debate_memory.rejected_claims if debate_memory else []
+        
+        prompt = f"""You are an expert research synthesizer. The dialectical debate reached an IMPASSE due to circular argument detection.
+
+Thesis Claim (REJECTED as circular): {thesis.claim}
+Thesis Reasoning: {thesis.reasoning}
+
+Circular Argument Critique: {antithesis.critique}
+
+Previous Valid Claims Explored:
+{chr(10).join(f"- {claim}" for claim in previous_claims[:3]) if previous_claims else "No previous claims available"}
+
+Your task:
+1. **ACKNOWLEDGE THE IMPASSE**: Explain that the debate reached a circular argument, indicating exhaustion of current theoretical approaches
+2. **DO NOT VALIDATE THE CIRCULAR CLAIM**: The rejected thesis should not be presented as the correct answer
+3. **SYNTHESIZE FROM VALID CLAIMS**: Focus on insights from the NON-CIRCULAR claims that were explored before the impasse
+4. **EXPLAIN WHAT WAS LEARNED**: What does the impasse reveal about the complexity of the question?
+5. **IDENTIFY OPEN QUESTIONS**: What remains unresolved? What approaches might break the impasse?
+
+Generate a synthesis that:
+- novel_insight: Acknowledges impasse and synthesizes what WAS learned (minimum 50 characters, maximum 500 characters)
+- supporting_claims: Claims from the VALID explorations (before circularity) (minimum 2)
+- confidence_score: Moderate (0.4-0.6) due to impasse
+- novelty_score: Lower (0.3-0.5) as impasse limits new insights
+- reasoning: Explanation of impasse, what was learned, and what remains open (minimum 100 characters)
+
+Be intellectually honest about the limitations imposed by the circular argument."""
+
+    elif synthesis_mode == "exhausted_attempts":
+        # Max iterations reached
+        logger.info("⏭️  Generating synthesis after max iterations reached")
+        
+        prompt = f"""You are an expert research synthesizer. The dialectical debate reached MAX ITERATIONS without resolution.
+
+Final Thesis Claim: {thesis.claim}
+Thesis Reasoning: {thesis.reasoning}
+
+Final Antithesis Analysis: {antithesis.critique}
+{f"Counter-claim: {antithesis.counter_claim}" if antithesis.counter_claim else ""}
+
+Multiple attempts at thesis-antithesis resolution failed to reach convergence.
+
+Your task:
+1. **ACKNOWLEDGE DIFFICULTY**: Explain that multiple iterations failed to resolve tensions
+2. **SYNTHESIZE PARTIAL INSIGHTS**: What was learned from the multiple attempts?
+3. **EXPLAIN WHY CONVERGENCE WAS HARD**: What makes this question particularly complex?
+4. **IDENTIFY REMAINING TENSIONS**: What contradictions remain unresolved?
+
+Generate a synthesis that:
+- novel_insight: Partial synthesis acknowledging difficulty of resolution (minimum 50 characters, maximum 500 characters)
+- supporting_claims: Insights from multiple iterations (minimum 2)
+- confidence_score: Lower (0.3-0.5) due to lack of resolution
+- novelty_score: Moderate (0.4-0.6)
+- reasoning: Explanation of what was explored and why convergence was difficult (minimum 100 characters)"""
+
+    else:
+        # Standard synthesis mode
+        dialectical_context = "rigorous dialectical debate" if antithesis.contradiction_found else "critical evaluation that validated the thesis"
+        
+        prompt = f"""You are an expert research synthesizer tasked with integrating diverse perspectives into novel insights after {dialectical_context}.
 
 Thesis Claim: {thesis.claim}
 Thesis Reasoning: {thesis.reasoning}
@@ -80,26 +149,28 @@ Antithesis Analysis: {antithesis.critique}
 Contradiction Found: {antithesis.contradiction_found}
 
 Your task:
-1. Synthesize a novel insight that integrates both the thesis and antithesis
-2. Go beyond simply combining them - generate a NEW perspective or understanding
-3. Acknowledge both the strengths (from thesis) and limitations (from antithesis)
-4. Support your synthesis with claims from both sides
+1. Synthesize a novel insight that integrates the dialectical process:
+   - If contradiction was found: Integrate thesis, antithesis, and resolution of tensions
+   - If no contradiction: Build upon the validated thesis with deeper implications or connections
+2. Go beyond simply restating - generate a NEW perspective or understanding
+3. Acknowledge both strengths and any limitations identified
+4. Support your synthesis with specific claims from the dialectical process
 5. **IMPORTANT**: Self-assess the novelty of your synthesis:
-   - novelty_score: How novel is this insight compared to the input thesis and antithesis?
-   - Score 0.0-0.3: Mostly restates existing points
-   - Score 0.4-0.6: Moderately novel, some new connections
+   - novelty_score: How novel is this insight compared to the original thesis?
+   - Score 0.0-0.3: Mostly restates the thesis (valid if thesis was already excellent)
+   - Score 0.4-0.6: Moderately novel, makes meaningful connections
    - Score 0.7-1.0: Highly novel, significant new insights or frameworks
 6. Assess your confidence in the synthesis (0.0-1.0)
 
 Generate a synthesis with:
-- novel_insight: Your synthesized insight (minimum 50 characters)
-- supporting_claims: List of specific claims from thesis/antithesis that support synthesis
+- novel_insight: Your synthesized insight (minimum 50 characters, maximum 500 characters)
+- supporting_claims: List of specific claims from thesis/antithesis that support synthesis (minimum 2)
 - evidence_lineage: List of ALL source URLs (will be provided automatically)
 - confidence_score: Your confidence (0.0-1.0)
-- novelty_score: Self-assessed novelty (0.0-1.0) - be honest and critical
-- reasoning: Detailed explanation of how you derived this synthesis (minimum 50 characters)
+- novelty_score: Self-assessed novelty (0.0-1.0) - be intellectually honest
+- reasoning: Detailed explanation of how you derived this synthesis from the dialectical process (minimum 100 characters)
 
-Be intellectually rigorous. Don't overstate novelty - if your synthesis is mostly a summary, score it low (0.3-0.5)."""
+Be intellectually rigorous. If the thesis was sound and passed skeptical scrutiny, a lower novelty score (0.2-0.4) is appropriate and honest."""
 
     # Call Gemini with retry logic
     max_validation_retries = 2

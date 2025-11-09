@@ -86,7 +86,8 @@ def skeptic_node(state: AgentState) -> Dict[str, Any]:
                 "current_antithesis": antithesis,
                 "contradiction_report": "CIRCULAR ARGUMENT (auto-rejected based on similarity)",
                 "messages": [f"Skeptic: {antithesis.critique[:100]}..."],
-                "debate_memory": updated_memory
+                "debate_memory": updated_memory,
+                "last_similarity_score": max_similarity  # Natural termination: track similarity
             }
     
     # No circular argument detected, proceed with full LLM evaluation
@@ -233,7 +234,8 @@ Remember: Your goal is dialectical progress, not endless debate. If the thesis i
                 "current_antithesis": antithesis,
                 "contradiction_report": contradiction_report,
                 "messages": [f"Skeptic: {antithesis.critique[:150]}..."],
-                "debate_memory": updated_memory
+                "debate_memory": updated_memory,
+                "last_similarity_score": None  # Natural termination: no circular argument detected
             }
             
         except ValidationError as e:

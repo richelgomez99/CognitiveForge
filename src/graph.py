@@ -27,13 +27,22 @@ logger = logging.getLogger(__name__)
 
 def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
     """
-    Conditional routing function for the dialectical debate loop.
+    Conditional routing function for the dialectical debate loop with natural termination.
     
     Implements FR-T1-006: Conditional edge from Skeptic based on contradiction detection
+    Implements T089: Circular argument detection and impasse synthesis
+    Implements Natural Termination: Stop when genuinely stuck (Option 3)
     
-    Decision Logic:
-    - If contradiction found AND iterations remain: Loop back to Analyst for refinement
-    - Otherwise: Proceed to Synthesizer for final synthesis
+    Decision Logic (in order):
+    1. If circular argument detected: Set impasse mode and route to Synthesizer
+    2. If genuinely stuck (consecutive high-similarity rejections): Set stuck mode and route to Synthesizer
+    3. If contradiction found AND iterations remain: Loop back to Analyst for refinement
+    4. Otherwise: Proceed to Synthesizer for final synthesis
+    
+    Natural Termination Criteria:
+    - 2+ consecutive rejections with similarity >0.75 = genuinely stuck
+    - Indicates exhaustion of theoretical approaches
+    - More intelligent than arbitrary MAX_ITERATIONS cutoff
     
     Args:
         state: Current AgentState with current_antithesis and iteration_count
@@ -42,12 +51,51 @@ def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
         "analyst": Route back to analyst for another iteration
         "synthesizer": Proceed to synthesizer for final synthesis
     """
-    # Get max iterations from environment (default: 3)
-    max_iterations = int(os.getenv("MAX_ITERATIONS", "3"))
+    # Get max iterations from environment (default: 10, increased from 3 as safety net)
+    max_iterations = int(os.getenv("MAX_ITERATIONS", "10"))
     
     # Extract state
     antithesis = state.get("current_antithesis")
     iteration_count = state.get("iteration_count", 0)
+    last_similarity_score = state.get("last_similarity_score")
+    consecutive_high_similarity_count = state.get("consecutive_high_similarity_count", 0)
+    
+    # NATURAL TERMINATION: Track consecutive high-similarity rejections
+    HIGH_SIMILARITY_THRESHOLD = 0.75  # Looser than circular detection (0.80)
+    STUCK_THRESHOLD = 2  # 2 consecutive high-similarity rejections = stuck
+    
+    if last_similarity_score is not None and last_similarity_score >= HIGH_SIMILARITY_THRESHOLD:
+        # High similarity detected
+        consecutive_high_similarity_count += 1
+        state["consecutive_high_similarity_count"] = consecutive_high_similarity_count
+        
+        logger.info(f"📊 ROUTING: High similarity detected: {last_similarity_score:.2f}")
+        logger.info(f"   Consecutive high-similarity count: {consecutive_high_similarity_count}/{STUCK_THRESHOLD}")
+        
+        # Check if genuinely stuck
+        if consecutive_high_similarity_count >= STUCK_THRESHOLD:
+            logger.warning(f"⛔ ROUTING: GENUINELY STUCK detected ({consecutive_high_similarity_count} consecutive high-similarity rejections)")
+            logger.warning(f"   System has exhausted theoretical approaches. Proceeding to synthesis.")
+            state["synthesis_mode"] = "impasse"
+            return "synthesizer"
+    else:
+        # Reset counter if similarity is low
+        if consecutive_high_similarity_count > 0:
+            logger.info(f"📊 ROUTING: Similarity reset (was {consecutive_high_similarity_count} consecutive)")
+        state["consecutive_high_similarity_count"] = 0
+    
+    # T089: Check if circular argument was detected (Tier 1 bug fix)
+    if antithesis and antithesis.critique:
+        critique_lower = antithesis.critique.lower()
+        circular_keywords = ["circular", "identical", "similarity", "redundant", "same as"]
+        is_circular = any(keyword in critique_lower for keyword in circular_keywords)
+        
+        if is_circular:
+            logger.info("🔄 ROUTING: Circular argument detected. Setting impasse mode.")
+            logger.info(f"   Critique: {antithesis.critique[:150]}...")
+            # Set synthesis mode to impasse (will be picked up by synthesizer)
+            state["synthesis_mode"] = "impasse"
+            return "synthesizer"
     
     # Check if we should loop back
     if antithesis and antithesis.contradiction_found and iteration_count < max_iterations:
@@ -58,13 +106,16 @@ def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
             f"(iteration {next_iteration}/{max_iterations})"
         )
         logger.info(f"   Contradiction: {antithesis.critique[:100]}...")
+        state["synthesis_mode"] = "standard"  # Standard synthesis if we reach it
         return "analyst"
     else:
         # Proceed to synthesis
         if iteration_count >= max_iterations:
-            logger.info(f"⏭️  ROUTING: Max iterations ({max_iterations}) reached. Proceeding to Synthesizer.")
+            logger.info(f"⏭️  ROUTING: Max iterations ({max_iterations}) reached (safety net). Proceeding to Synthesizer.")
+            state["synthesis_mode"] = "exhausted_attempts"
         else:
             logger.info(f"✅ ROUTING: No contradiction found. Proceeding to Synthesizer.")
+            state["synthesis_mode"] = "standard"
         return "synthesizer"
 
 
@@ -116,21 +167,27 @@ def build_graph(use_checkpointer: bool = False, db_path: str = "dialectical_syst
     
     Tier 1 Usage (CLI mode, no persistence):
         >>> graph = build_graph(use_checkpointer=False)
+        >>> import uuid
         >>> result = graph.invoke({
         ...     "original_query": "What are the limitations of transformers?",
         ...     "messages": [],
         ...     "iteration_count": 0,
-        ...     "procedural_memory": ""
+        ...     "procedural_memory": "",
+        ...     "debate_memory": {"rejected_claims": [], "skeptic_objections": [], "weak_evidence_urls": []},
+        ...     "current_claim_id": str(uuid.uuid4())
         ... })
     
     Tier 2 Usage (API mode with persistence):
         >>> graph = build_graph(use_checkpointer=True)
         >>> config = {"configurable": {"thread_id": "session_123"}}
+        >>> import uuid
         >>> result = graph.invoke({
         ...     "original_query": "What are the limitations of transformers?",
         ...     "messages": [],
         ...     "iteration_count": 0,
-        ...     "procedural_memory": ""
+        ...     "procedural_memory": "",
+        ...     "debate_memory": {"rejected_claims": [], "skeptic_objections": [], "weak_evidence_urls": []},
+        ...     "current_claim_id": str(uuid.uuid4())
         ... }, config=config)
         >>> # Resume from checkpoint
         >>> state = graph.get_state(config)

@@ -362,6 +362,9 @@ class AgentState(TypedDict):
         procedural_memory: Procedural heuristics for agent learning (Tier 3)
         debate_memory: Memory of rejected claims and objections (Tier 1: US2)
         current_claim_id: UUID for current claim/iteration (Tier 1: US1)
+        synthesis_mode: Mode for synthesis ("standard" | "impasse" | "exhausted_attempts") (Tier 1: T089)
+        consecutive_high_similarity_count: Count of consecutive rejections with high similarity (>0.75)
+        last_similarity_score: Most recent similarity score from circular argument check
     """
     messages: Annotated[list, add_messages]
     original_query: str
@@ -373,4 +376,7 @@ class AgentState(TypedDict):
     procedural_memory: str  # For Tier 3 compatibility
     debate_memory: DebateMemory  # Tier 1: Memory for circular argument prevention
     current_claim_id: str  # Tier 1: UUID for claim-specific paper discovery
+    synthesis_mode: Optional[str]  # Tier 1: T089 - "standard" | "impasse" | "exhausted_attempts"
+    consecutive_high_similarity_count: int  # Natural termination: track consecutive high-similarity rejections
+    last_similarity_score: Optional[float]  # Natural termination: most recent similarity score
 

@@ -1,0 +1,475 @@
+openapi: 3.1.0
+info:
+  title: CognitiveForge Knowledge Discovery API
+  version: 1.0.0
+  description: |
+    API for discovering and ingesting academic research papers into the Neo4j knowledge graph.
+    
+    ## Features
+    - Manual paper search (arXiv, Semantic Scholar)
+    - Automatic on-demand paper discovery
+    - Deduplication and metadata tracking
+    - Integration with dialectical synthesis system
+    
+    ## Authentication
+    All endpoints require `X-API-Key` header authentication.
+    
+  contact:
+    name: CognitiveForge API Support
+    email: support@cognitiveforge.dev
+
+servers:
+  - url: http://localhost:8000
+    description: Local development server
+  - url: https://cognitiveforge.app
+    description: Production server
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Discovery
+    description: Paper discovery and ingestion endpoints
+  - name: Synthesis
+    description: Dialectical synthesis endpoints (extended for discovery)
+
+paths:
+  /discover:
+    post:
+      tags:
+        - Discovery
+      summary: Search for academic papers
+      description: |
+        Search arXiv or Semantic Scholar for papers matching the query.
+        Returns paper metadata for user preview before adding to knowledge graph.
+        
+        **Rate Limit**: 20 requests/minute per API key
+        **Response Time**: < 3 seconds (95th percentile)
+      operationId: discoverPapers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DiscoveryRequest'
+            examples:
+              arxiv:
+                summary: Search arXiv for transformers
+                value:
+                  query: "transformer architecture"
+                  source: "arxiv"
+                  max_results: 10
+              semantic_scholar:
+                summary: Search Semantic Scholar for consciousness
+                value:
+                  query: "consciousness computational"
+                  source: "semantic_scholar"
+                  max_results: 10
+      responses:
+        '200':
+          description: Papers found successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscoveryResponse'
+              examples:
+                success:
+                  summary: Successful discovery
+                  value:
+                    papers:
+                      - title: "Attention Is All You Need"
+                        url: "https://arxiv.org/abs/1706.03762"
+                        abstract: "We propose a new simple network architecture..."
+                        authors: ["Vaswani, Ashish", "Shazeer, Noam"]
+                        published: "2017-06-12T00:00:00Z"
+                        source: "arxiv"
+                        citation_count: 45123
+                        fields_of_study: ["Computer Science", "AI"]
+                    count: 1
+                    source: "arxiv"
+                    query: "transformer architecture"
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                invalid_source:
+                  value:
+                    detail: "source must be 'arxiv' or 'semantic_scholar'"
+                query_too_short:
+                  value:
+                    detail: "query must be at least 3 characters"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimitExceeded'
+        '503':
+          description: External API unavailable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: "arXiv API temporarily unavailable, try again later"
+
+  /add_papers:
+    post:
+      tags:
+        - Discovery
+      summary: Add papers to knowledge graph
+      description: |
+        Add selected papers to the Neo4j knowledge graph.
+        Papers are deduplicated by URL. Duplicate papers are skipped without error.
+        
+        **Rate Limit**: 10 requests/minute per API key
+        **Response Time**: < 5 seconds for 10 papers
+      operationId: addPapers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AddPapersRequest'
+            examples:
+              manual:
+                summary: Manually selected papers
+                value:
+                  paper_urls:
+                    - "https://arxiv.org/abs/1706.03762"
+                    - "https://arxiv.org/abs/2010.11929"
+                  discovered_by: "manual"
+              automatic:
+                summary: Automatically discovered papers
+                value:
+                  paper_urls:
+                    - "https://arxiv.org/abs/1706.03762"
+                  discovered_by: "query:transformer architecture"
+      responses:
+        '200':
+          description: Papers processed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddPapersResponse'
+              examples:
+                all_added:
+                  summary: All papers added
+                  value:
+                    added: 2
+                    skipped: 0
+                    failed: 0
+                    details: []
+                some_duplicates:
+                  summary: Some duplicates skipped
+                  value:
+                    added: 1
+                    skipped: 1
+                    failed: 0
+                    details:
+                      - "Skipped duplicate: https://arxiv.org/abs/1706.03762"
+        '400':
+          description: Invalid request
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: "paper_urls must contain at least 1 URL"
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          description: Neo4j connection failure
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                detail: "Failed to connect to Neo4j database"
+
+  /stream_dialectics/{thread_id}:
+    post:
+      tags:
+        - Synthesis
+      summary: Stream dialectical synthesis (with optional auto-discovery)
+      description: |
+        Run dialectical synthesis and stream agent activity via Server-Sent Events (SSE).
+        
+        **NEW in Discovery Engine**: `auto_discover` parameter enables automatic paper discovery
+        before synthesis begins. Discovery runs in background and does not block streaming.
+        
+        **Response Format**: SSE stream with event types:
+        - `agent_start`, `agent_complete`, `synthesis_complete`
+      operationId: streamDialectics
+      parameters:
+        - name: thread_id
+          in: path
+          required: true
+          description: Unique thread identifier for this synthesis session
+          schema:
+            type: string
+          example: "session_abc123"
+        - name: auto_discover
+          in: query
+          required: false
+          description: |
+            Enable automatic paper discovery before synthesis.
+            If true, system searches arXiv and Semantic Scholar for relevant papers
+            and adds them to knowledge graph before Analyst begins.
+          schema:
+            type: boolean
+            default: true
+          examples:
+            enabled:
+              value: true
+              summary: Auto-discover enabled (default)
+            disabled:
+              value: false
+              summary: Auto-discover disabled (use existing KG only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - query
+              properties:
+                query:
+                  type: string
+                  minLength: 10
+                  description: Research query for dialectical synthesis
+                  example: "What are the key limitations of transformer architecture?"
+      responses:
+        '200':
+          description: SSE stream of synthesis events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Server-Sent Events stream
+              examples:
+                synthesis_stream:
+                  value: |
+                    event: agent_start
+                    data: {"agent": "analyst", "timestamp": "2025-11-08T18:30:00Z"}
+
+                    event: agent_complete
+                    data: {"agent": "analyst", "output": "Thesis generated"}
+
+                    event: synthesis_complete
+                    data: {"novel_insight": "...", "confidence": 0.95}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication. Obtain from environment variable `API_KEY`.
+
+  schemas:
+    DiscoveryRequest:
+      type: object
+      required:
+        - query
+        - source
+      properties:
+        query:
+          type: string
+          minLength: 3
+          description: Search query (keywords)
+          example: "transformer architecture"
+        source:
+          type: string
+          enum: [arxiv, semantic_scholar]
+          description: Search source
+          example: "arxiv"
+        max_results:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 10
+          description: Maximum papers to return
+          example: 10
+
+    DiscoveryResponse:
+      type: object
+      required:
+        - papers
+        - count
+        - source
+        - query
+      properties:
+        papers:
+          type: array
+          items:
+            $ref: '#/components/schemas/PaperMetadata'
+          description: List of discovered papers
+        count:
+          type: integer
+          description: Number of papers returned
+          example: 10
+        source:
+          type: string
+          description: Source that was searched
+          example: "arxiv"
+        query:
+          type: string
+          description: Original search query
+          example: "transformer architecture"
+
+    PaperMetadata:
+      type: object
+      required:
+        - title
+        - url
+        - abstract
+        - authors
+        - published
+        - source
+      properties:
+        title:
+          type: string
+          minLength: 10
+          description: Paper title
+          example: "Attention Is All You Need"
+        url:
+          type: string
+          format: uri
+          description: Unique paper URL
+          example: "https://arxiv.org/abs/1706.03762"
+        abstract:
+          type: string
+          minLength: 50
+          description: Paper abstract
+          example: "We propose a new simple network architecture..."
+        authors:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: List of author names
+          example: ["Vaswani, Ashish", "Shazeer, Noam"]
+        published:
+          type: string
+          format: date-time
+          description: Publication date (ISO 8601)
+          example: "2017-06-12T00:00:00Z"
+        source:
+          type: string
+          enum: [arxiv, semantic_scholar, manual]
+          description: Discovery source
+          example: "arxiv"
+        citation_count:
+          type: integer
+          minimum: 0
+          default: 0
+          description: Number of citations
+          example: 45123
+        fields_of_study:
+          type: array
+          items:
+            type: string
+          description: Subject classification tags
+          example: ["Computer Science", "Artificial Intelligence"]
+
+    AddPapersRequest:
+      type: object
+      required:
+        - paper_urls
+      properties:
+        paper_urls:
+          type: array
+          items:
+            type: string
+            format: uri
+          minItems: 1
+          description: List of paper URLs to add
+          example:
+            - "https://arxiv.org/abs/1706.03762"
+            - "https://arxiv.org/abs/2010.11929"
+        discovered_by:
+          type: string
+          default: "manual"
+          description: Discovery method identifier
+          example: "manual"
+
+    AddPapersResponse:
+      type: object
+      required:
+        - added
+        - skipped
+        - failed
+      properties:
+        added:
+          type: integer
+          minimum: 0
+          description: Number of papers successfully added
+          example: 2
+        skipped:
+          type: integer
+          minimum: 0
+          description: Number of papers skipped (duplicates)
+          example: 0
+        failed:
+          type: integer
+          minimum: 0
+          description: Number of papers that failed to add
+          example: 0
+        details:
+          type: array
+          items:
+            type: string
+          description: Detailed messages (e.g., duplicate URLs)
+          example:
+            - "Skipped duplicate: https://arxiv.org/abs/1706.03762"
+
+    Error:
+      type: object
+      required:
+        - detail
+      properties:
+        detail:
+          type: string
+          description: Human-readable error message
+          example: "Invalid request: query too short"
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: "X-API-Key header missing or invalid"
+
+    RateLimitExceeded:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            detail: "Rate limit exceeded: 20 requests/minute"
+      headers:
+        X-RateLimit-Limit:
+          description: Request limit per time window
+          schema:
+            type: integer
+          example: 20
+        X-RateLimit-Remaining:
+          description: Requests remaining in current window
+          schema:
+            type: integer
+          example: 0
+        X-RateLimit-Reset:
+          description: Unix timestamp when rate limit resets
+          schema:
+            type: integer
+          example: 1699472400
+

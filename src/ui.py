@@ -9,8 +9,9 @@ import requests
 import json
 import os
 import uuid
+import re
 from datetime import datetime
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
 # Page configuration
 st.set_page_config(
@@ -55,8 +56,38 @@ def check_backend_health() -> Dict[str, Any]:
         return {"status": "unhealthy", "error": str(e)}
 
 
-def stream_dialectics(thread_id: str, query: str) -> None:
-    """Stream dialectical synthesis process via SSE."""
+def extract_citations(text: str) -> Tuple[str, List[str]]:
+    """
+    Extract [CITE: url] citations from text and return cleaned text with list of URLs.
+    
+    Implements T055-T056: Parse citations from agent outputs.
+    
+    Args:
+        text: Text containing [CITE: url] markers
+    
+    Returns:
+        Tuple of (cleaned_text, list_of_urls)
+    
+    Example:
+        >>> extract_citations("Research shows [CITE: http://arxiv.org/abs/123] that...")
+        ("Research shows that...", ["http://arxiv.org/abs/123"])
+    """
+    citation_pattern = r'\[CITE:\s*(https?://[^\]]+)\]'
+    citations = re.findall(citation_pattern, text)
+    cleaned_text = re.sub(citation_pattern, '', text)
+    return cleaned_text, citations
+
+
+def stream_dialectics(thread_id: str, query: str, auto_discover: bool = True) -> None:
+    """
+    Stream dialectical synthesis process via SSE.
+    
+    Implements T049-T052:
+    - Passes auto_discover parameter to backend
+    - Handles discovery events (discovery_start, paper_found, etc.)
+    - Displays discovery progress in real-time
+    - Creates collapsible section for discovered papers
+    """
     if not API_KEY:
         st.error("❌ API_KEY not set. Please configure it in environment variables or Streamlit secrets.")
         return
@@ -67,10 +98,16 @@ def stream_dialectics(thread_id: str, query: str) -> None:
     }
     
     url = f"{API_BASE_URL}/stream_dialectics/{thread_id}"
-    params = {"query": query}
+    params = {"query": query, "auto_discover": auto_discover}  # T049: Pass auto_discover
+    
+    # Initialize session state for discovered papers
+    if "current_discovered_papers" not in st.session_state:
+        st.session_state.current_discovered_papers = []
+    st.session_state.current_discovered_papers = []  # Reset for new session
     
     # Create containers for streaming content
     status_container = st.container()
+    discovery_container = st.container()  # T050: Container for discovery events
     progress_bar = st.progress(0)
     agent_containers = {
         "analyst": st.container(),
@@ -79,7 +116,10 @@ def stream_dialectics(thread_id: str, query: str) -> None:
     }
     
     with status_container:
-        st.info("🚀 Starting dialectical synthesis...")
+        if auto_discover:
+            st.info("🔬 Auto-discovery enabled: Searching for relevant papers...")
+        else:
+            st.info("🚀 Starting dialectical synthesis...")
     
     try:
         with requests.get(url, params=params, headers=headers, stream=True, timeout=300) as response:
@@ -93,12 +133,22 @@ def stream_dialectics(thread_id: str, query: str) -> None:
             event_count = 0
             synthesis_complete = False
             
+            discovery_status_placeholder = None
+            discovery_papers_list = []
+            
             for line in response.iter_lines():
                 if not line:
                     continue
                 
                 # Decode SSE event
                 line_str = line.decode('utf-8')
+                
+                # T050: Parse SSE events with 'event:' prefix (for discovery events)
+                event_type = None
+                if line_str.startswith('event: '):
+                    event_type = line_str[7:].strip()
+                    continue  # Next line will have data
+                
                 if not line_str.startswith('data: '):
                     continue
                 
@@ -106,6 +156,71 @@ def stream_dialectics(thread_id: str, query: str) -> None:
                 
                 try:
                     event_data = json.loads(event_data_str)
+                    
+                    # T050-T051: Handle discovery events
+                    if event_type:
+                        with discovery_container:
+                            if event_type == "discovery_start":
+                                discovery_status_placeholder = st.empty()
+                                discovery_status_placeholder.info(f"🔍 Searching for papers...")
+                            
+                            elif event_type == "source_searching":
+                                source = event_data.get("source", "unknown")
+                                if discovery_status_placeholder:
+                                    discovery_status_placeholder.info(f"🔍 Searching {source}...")
+                            
+                            elif event_type == "paper_found":
+                                # T051: Display each paper as it's found
+                                title = event_data.get("title", "Unknown")
+                                authors = event_data.get("authors", [])
+                                source = event_data.get("source", "")
+                                url = event_data.get("url", "#")
+                                
+                                discovery_papers_list.append(event_data)
+                                st.session_state.current_discovered_papers.append(event_data)
+                                
+                                if discovery_status_placeholder:
+                                    discovery_status_placeholder.success(f"📄 Found: {title[:60]}... by {', '.join(authors)}")
+                            
+                            elif event_type == "papers_ingesting":
+                                count = event_data.get("count", 0)
+                                if discovery_status_placeholder:
+                                    discovery_status_placeholder.info(f"💾 Adding {count} papers to knowledge graph...")
+                            
+                            elif event_type == "discovery_complete":
+                                added = event_data.get("added", 0)
+                                skipped = event_data.get("skipped", 0)
+                                duration = event_data.get("duration", 0)
+                                
+                                if discovery_status_placeholder:
+                                    if added > 0:
+                                        discovery_status_placeholder.success(
+                                            f"✅ Discovery complete: {added} papers added, {skipped} skipped ({duration}s)"
+                                        )
+                                    else:
+                                        discovery_status_placeholder.warning(
+                                            f"⚠️ No new papers added ({skipped} duplicates, {duration}s)"
+                                        )
+                                
+                                # T052: Create collapsible section for discovered papers
+                                if discovery_papers_list:
+                                    with st.expander(f"📚 Discovered Papers ({len(discovery_papers_list)})", expanded=False):
+                                        for idx, paper in enumerate(discovery_papers_list, 1):
+                                            st.markdown(f"**{idx}. [{paper['title']}]({paper['url']})**")
+                                            st.caption(f"👤 {', '.join(paper['authors'][:3])} | 📚 {paper['source']}")
+                                            st.divider()
+                            
+                            elif event_type == "discovery_error":
+                                error = event_data.get("error", "Unknown error")
+                                source = event_data.get("source", "unknown")
+                                st.warning(f"⚠️ Discovery error ({source}): {error}")
+                            
+                            elif event_type == "discovery_timeout":
+                                st.warning("⏱️ Discovery timeout - proceeding with synthesis")
+                        
+                        continue  # Don't process as agent event
+                    
+                    # Standard agent events (existing code)
                     node = event_data.get("node", "unknown")
                     data = event_data.get("data", {})
                     event_count += 1
@@ -131,7 +246,14 @@ def stream_dialectics(thread_id: str, query: str) -> None:
                                     st.success("✅ Thesis Generated")
                                     st.markdown(f"**Claim:** {thesis.get('claim', 'N/A')}")
                                     with st.expander("📋 View Reasoning"):
-                                        st.write(thesis.get('reasoning', 'N/A'))
+                                        # T055: Extract and display citations inline
+                                        reasoning_text = thesis.get('reasoning', 'N/A')
+                                        cleaned_reasoning, inline_citations = extract_citations(reasoning_text)
+                                        st.write(cleaned_reasoning)
+                                        if inline_citations:
+                                            st.caption("📖 Cited in reasoning:")
+                                            for cite_url in inline_citations:
+                                                st.caption(f"  • [{cite_url}]({cite_url})")
                                     with st.expander("📚 Evidence Sources"):
                                         for idx, ev in enumerate(thesis.get('evidence', []), 1):
                                             st.write(f"{idx}. [{ev.get('source_url', 'N/A')}]({ev.get('source_url', '#')})")
@@ -147,7 +269,14 @@ def stream_dialectics(thread_id: str, query: str) -> None:
                                         st.success("✅ No Major Contradictions")
                                     
                                     with st.expander("🔍 Critique"):
-                                        st.write(antithesis.get('critique', 'N/A'))
+                                        # T055: Extract and display citations inline
+                                        critique_text = antithesis.get('critique', 'N/A')
+                                        cleaned_critique, inline_citations = extract_citations(critique_text)
+                                        st.write(cleaned_critique)
+                                        if inline_citations:
+                                            st.caption("📖 Cited in critique:")
+                                            for cite_url in inline_citations:
+                                                st.caption(f"  • [{cite_url}]({cite_url})")
                                 
                                 elif node == "synthesizer" and "final_synthesis" in data:
                                     synthesis = data["final_synthesis"]
@@ -165,11 +294,28 @@ def stream_dialectics(thread_id: str, query: str) -> None:
                                         st.metric("Novelty", f"{novelty:.2%}")
                                     
                                     with st.expander("🧠 Synthesis Reasoning"):
-                                        st.write(synthesis.get('reasoning', 'N/A'))
+                                        # T055: Extract and display citations inline
+                                        reasoning_text = synthesis.get('reasoning', 'N/A')
+                                        cleaned_reasoning, inline_citations = extract_citations(reasoning_text)
+                                        st.write(cleaned_reasoning)
+                                        if inline_citations:
+                                            st.caption("📖 Cited in reasoning:")
+                                            for cite_url in inline_citations:
+                                                st.caption(f"  • [{cite_url}]({cite_url})")
                                     
-                                    with st.expander("📚 Evidence Lineage"):
-                                        for idx, url in enumerate(synthesis.get('evidence_lineage', []), 1):
-                                            st.write(f"{idx}. [{url}]({url})")
+                                    # T056: References Used section combining evidence lineage and inline citations
+                                    with st.expander("📚 References Used", expanded=True):
+                                        all_refs = set(synthesis.get('evidence_lineage', []))
+                                        # Add inline citations from reasoning
+                                        if inline_citations:
+                                            all_refs.update(inline_citations)
+                                        
+                                        if all_refs:
+                                            st.caption(f"**{len(all_refs)} references cited in this synthesis:**")
+                                            for idx, url in enumerate(sorted(all_refs), 1):
+                                                st.write(f"{idx}. [{url}]({url})")
+                                        else:
+                                            st.caption("No external references cited.")
                 
                 except json.JSONDecodeError:
                     st.warning(f"Failed to parse event: {event_data_str[:100]}")
@@ -346,6 +492,125 @@ def main():
         if st.button("🗑️ Clear History"):
             st.session_state.query_history = []
             st.rerun()
+        
+        st.divider()
+        
+        # Knowledge Discovery Section
+        st.header("📚 Knowledge Discovery")
+        st.caption("Search and add academic papers to the knowledge graph")
+        
+        # Initialize discovery session state
+        if "discovered_papers" not in st.session_state:
+            st.session_state.discovered_papers = []
+        if "selected_paper_indices" not in st.session_state:
+            st.session_state.selected_paper_indices = []
+        if "last_search_source" not in st.session_state:
+            st.session_state.last_search_source = None
+        
+        # Search input
+        discovery_query = st.text_input(
+            "Search Query",
+            placeholder="e.g., transformer architecture",
+            key="discovery_query",
+            help="Enter keywords to search for papers"
+        )
+        
+        # Search buttons
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔍 arXiv", disabled=not discovery_query):
+                with st.spinner("Searching arXiv..."):
+                    try:
+                        headers = {"X-API-Key": API_KEY}
+                        response = requests.post(
+                            f"{API_BASE_URL}/discover",
+                            json={
+                                "query": discovery_query,
+                                "source": "arxiv",
+                                "max_results": 10
+                            },
+                            headers=headers,
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            data = response.json()
+                            st.session_state.discovered_papers = data["papers"]
+                            st.session_state.last_search_source = "arXiv"
+                            st.success(f"✅ Found {data['count']} papers from arXiv")
+                        else:
+                            st.error(f"❌ Search failed: {response.status_code}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+        
+        with col2:
+            if st.button("🔍 Semantic Scholar", disabled=not discovery_query):
+                with st.spinner("Searching Semantic Scholar..."):
+                    try:
+                        headers = {"X-API-Key": API_KEY}
+                        response = requests.post(
+                            f"{API_BASE_URL}/discover",
+                            json={
+                                "query": discovery_query,
+                                "source": "semantic_scholar",
+                                "max_results": 10
+                            },
+                            headers=headers,
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            data = response.json()
+                            st.session_state.discovered_papers = data["papers"]
+                            st.session_state.last_search_source = "Semantic Scholar"
+                            st.success(f"✅ Found {data['count']} papers from Semantic Scholar")
+                        else:
+                            st.error(f"❌ Search failed: {response.status_code}")
+                    except Exception as e:
+                        st.error(f"❌ Error: {str(e)}")
+        
+        # Display discovered papers
+        if st.session_state.discovered_papers:
+            st.write(f"**{len(st.session_state.discovered_papers)} papers from {st.session_state.last_search_source}**")
+            
+            # Paper selection with previews
+            selected_indices = []
+            for idx, paper in enumerate(st.session_state.discovered_papers):
+                with st.expander(f"📄 {paper['title'][:60]}..."):
+                    st.markdown(f"**Authors:** {', '.join(paper['authors'][:3])}" + ("..." if len(paper['authors']) > 3 else ""))
+                    st.markdown(f"**Abstract:** {paper['abstract'][:200]}...")
+                    st.markdown(f"**Citation Count:** {paper.get('citation_count', 0)}")
+                    st.markdown(f"**Published:** {paper['published']}")
+                    st.markdown(f"**Source:** {paper['source']}")
+                    
+                    if st.checkbox(f"Select for adding", key=f"paper_{idx}"):
+                        selected_indices.append(idx)
+            
+            # Add selected papers button
+            if selected_indices:
+                if st.button(f"➕ Add {len(selected_indices)} Papers to Knowledge Graph"):
+                    with st.spinner(f"Adding {len(selected_indices)} papers..."):
+                        try:
+                            # Send full paper objects (preferred approach)
+                            selected_papers = [st.session_state.discovered_papers[idx] for idx in selected_indices]
+                            headers = {"X-API-Key": API_KEY}
+                            response = requests.post(
+                                f"{API_BASE_URL}/add_papers",
+                                json={
+                                    "papers": selected_papers,
+                                    "discovered_by": "manual"
+                                },
+                                headers=headers,
+                                timeout=15
+                            )
+                            if response.status_code == 200:
+                                data = response.json()
+                                st.success(f"✅ Added {data['added']} papers, skipped {data['skipped']}")
+                                # Clear selection after successful add
+                                st.session_state.discovered_papers = []
+                                st.rerun()
+                            else:
+                                st.error(f"❌ Failed to add papers: {response.status_code}")
+                        except Exception as e:
+                            st.error(f"❌ Error: {str(e)}")
     
     # Main content tabs
     tab1, tab2, tab3 = st.tabs(["🚀 New Research", "📊 Query State", "🔄 View Trace"])
@@ -376,6 +641,13 @@ def main():
             help="Your research question for the dialectical synthesis process"
         )
         
+        # T048: Auto-discovery checkbox
+        auto_discover = st.checkbox(
+            "🔬 Auto-discover papers before synthesis",
+            value=True,
+            help="Automatically search arXiv for relevant papers and add them to the knowledge graph before starting synthesis"
+        )
+        
         col1, col2, col3 = st.columns([2, 1, 1])
         
         with col1:
@@ -394,8 +666,8 @@ def main():
             st.divider()
             st.markdown(f"**Session:** `{actual_thread_id}`")
             
-            # Stream the dialectics
-            stream_dialectics(actual_thread_id, query)
+            # Stream the dialectics (T049: Pass auto_discover parameter)
+            stream_dialectics(actual_thread_id, query, auto_discover=auto_discover)
     
     # Tab 2: Query State
     with tab2:

@@ -73,10 +73,17 @@ def normalize_arxiv_url(url: str) -> str:
     url = url.replace("export.arxiv.org", "arxiv.org")
     url = url.replace("/pdf/", "/abs/")
     
-    # Remove version suffix (v1, v2, etc.)
-    if "/abs/" in url and "v" in url.split("/abs/")[-1]:
-        base_url = url.split("v")[0]
-        return base_url
+    # Remove version suffix (v1, v2, etc.) from the paper ID
+    # Example: http://arxiv.org/abs/2301.12345v2 → http://arxiv.org/abs/2301.12345
+    if "/abs/" in url:
+        parts = url.split("/abs/")
+        if len(parts) == 2:
+            base_url, paper_id = parts
+            # Remove version suffix from paper_id (e.g., "2301.12345v2" → "2301.12345")
+            # Only split on 'v' if it's followed by a digit (version number)
+            import re
+            paper_id_clean = re.sub(r'v\d+$', '', paper_id)
+            return f"{base_url}/abs/{paper_id_clean}"
     
     return url
 
