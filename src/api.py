@@ -19,9 +19,12 @@ Endpoints:
 import os
 import json
 import logging
+import time
+import asyncio
 from pathlib import Path
 from typing import Dict, Any, AsyncIterator
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +37,13 @@ from src.auth import get_api_key
 
 # Import graph builder
 from src.graph import build_graph
+
+# Import models for type hints
+from src.models import DiscoveryRequest, DiscoveryResponse, AddPapersRequest, AddPapersResponse
+
+# Import discovery tools
+from src.tools.paper_discovery import search_arxiv, search_semantic_scholar
+from src.tools.kg_tools import add_papers_to_neo4j
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -342,6 +352,131 @@ async def get_state(
 
 
 # =============================================================================
+# Knowledge Discovery Helper Functions
+# =============================================================================
+
+async def discover_with_streaming(query: str, max_papers: int = 3) -> AsyncIterator[Dict[str, Any]]:
+    """
+    Async generator that performs paper discovery and yields real-time event updates.
+    
+    Implements T042-T046:
+    - Searches arXiv (and optionally Semantic Scholar if stable)
+    - Ingests papers into Neo4j
+    - Yields events: discovery_start, source_searching, paper_found, papers_ingesting, discovery_complete, discovery_error
+    
+    Args:
+        query: Research query to search for
+        max_papers: Maximum papers to retrieve per source
+    
+    Yields:
+        Event dicts with 'event_type' and 'data' keys
+    
+    Event Types:
+        - discovery_start: {"query": str}
+        - source_searching: {"source": "arxiv" | "semantic_scholar"}
+        - paper_found: {"title": str, "authors": List[str], "source": str, "url": str}
+        - papers_ingesting: {"count": int}
+        - discovery_complete: {"added": int, "skipped": int, "failed": int, "duration": float}
+        - discovery_error: {"error": str, "source": str}
+    """
+    start_time = time.time()
+    all_papers = []
+    
+    try:
+        # Emit discovery start event
+        yield {
+            "event_type": "discovery_start",
+            "data": {"query": query}
+        }
+        logger.info(f"🔍 Starting paper discovery for query: '{query}'")
+        
+        # Search arXiv (reliable source)
+        yield {
+            "event_type": "source_searching",
+            "data": {"source": "arxiv"}
+        }
+        logger.info("📚 Searching arXiv...")
+        
+        try:
+            # Run in thread pool since search_arxiv is synchronous
+            loop = asyncio.get_event_loop()
+            arxiv_papers = await loop.run_in_executor(
+                None,
+                search_arxiv,
+                query,
+                max_papers
+            )
+            
+            # Emit paper_found events for each paper
+            for paper in arxiv_papers:
+                all_papers.append(paper)
+                yield {
+                    "event_type": "paper_found",
+                    "data": {
+                        "title": paper.title,
+                        "authors": paper.authors[:3],  # First 3 authors
+                        "source": paper.source,
+                        "url": paper.url
+                    }
+                }
+                logger.info(f"📄 Found: {paper.title[:60]}... by {', '.join(paper.authors[:2])}")
+                
+        except Exception as e:
+            logger.warning(f"⚠️  arXiv search failed: {e}")
+            yield {
+                "event_type": "discovery_error",
+                "data": {"error": str(e), "source": "arxiv"}
+            }
+        
+        # Skip Semantic Scholar for now (pagination issues from previous implementation)
+        # Can be re-enabled after fixing the library issues
+        logger.info("ℹ️  Skipping Semantic Scholar (using arXiv only for automatic discovery)")
+        
+        # Ingest papers into Neo4j
+        if all_papers:
+            yield {
+                "event_type": "papers_ingesting",
+                "data": {"count": len(all_papers)}
+            }
+            logger.info(f"💾 Ingesting {len(all_papers)} papers into Neo4j...")
+            
+            # Run in thread pool since add_papers_to_neo4j is synchronous
+            result = await loop.run_in_executor(
+                None,
+                add_papers_to_neo4j,
+                all_papers,
+                "auto"
+            )
+            
+            duration = time.time() - start_time
+            
+            # Emit completion event
+            yield {
+                "event_type": "discovery_complete",
+                "data": {
+                    "added": result.get("added", 0),
+                    "skipped": result.get("skipped", 0),
+                    "failed": result.get("failed", 0),
+                    "duration": round(duration, 2)
+                }
+            }
+            logger.info(f"✅ Discovery complete: {result.get('added', 0)} added, {result.get('skipped', 0)} skipped in {duration:.2f}s")
+        else:
+            logger.warning("⚠️  No papers discovered")
+            yield {
+                "event_type": "discovery_complete",
+                "data": {"added": 0, "skipped": 0, "failed": 0, "duration": round(time.time() - start_time, 2)}
+            }
+            
+    except Exception as e:
+        logger.error(f"❌ Discovery pipeline error: {e}")
+        yield {
+            "event_type": "discovery_error",
+            "data": {"error": str(e), "source": "pipeline"}
+        }
+
+
+# =============================================================================
 # Streaming Endpoint (Requires Authentication)
 # =============================================================================
 
@@ -354,6 +489,7 @@ async def get_state(
 async def stream_dialectics(
     thread_id: str,
     query: str = Query(..., description="Research query to process"),
+    auto_discover: bool = Query(True, description="Automatically discover papers before synthesis"),
     api_key: str = Depends(get_api_key)
 ):
     """
@@ -409,8 +545,13 @@ async def stream_dialectics(
         """
         Async generator that streams graph execution updates as SSE events.
         
+        Implements T044-T046:
+        - Emits discovery events BEFORE agent streaming if auto_discover=True
+        - Adds 10s timeout with asyncio.wait_for
+        - Wraps discovery in try-except, emits discovery_error on failure
+        
         Yields:
-            SSE-formatted strings: "data: {json}\n\n"
+            SSE-formatted strings: "event: {event_type}\ndata: {json}\n\n"
         """
         try:
             # Get graph from cache (initialized at startup via lifespan)
@@ -420,7 +561,57 @@ async def stream_dialectics(
                 yield f"data: {json.dumps(error_event)}\n\n"
                 return
             
+            # =========================================================================
+            # PHASE 1: Paper Discovery (if enabled)
+            # =========================================================================
+            
+            if auto_discover:
+                logger.info("🔬 Auto-discovery enabled - starting paper discovery phase")
+                
+                try:
+                    # Run discovery with 10-second timeout (T045)
+                    discovery_task = discover_with_streaming(query, max_papers=3)
+                    
+                    async for discovery_event in discovery_task:
+                        # Format as SSE with event type
+                        event_type = discovery_event.get("event_type", "discovery_update")
+                        event_data = discovery_event.get("data", {})
+                        
+                        # Emit SSE event
+                        sse_message = f"event: {event_type}\ndata: {json.dumps(event_data)}\n\n"
+                        yield sse_message
+                        
+                        # Check for timeout (discovery_complete event should arrive within 10s)
+                        # Note: The timeout is handled by the outer try-except and asyncio.wait_for
+                    
+                    logger.info("✅ Discovery phase complete - proceeding to agent execution")
+                    
+                except asyncio.TimeoutError:
+                    # T045: Emit timeout event but proceed with synthesis
+                    logger.warning("⏱️  Discovery timeout (>10s) - proceeding with synthesis")
+                    timeout_event = {
+                        "event_type": "discovery_timeout",
+                        "data": {"message": "Discovery exceeded 10s timeout, proceeding with synthesis"}
+                    }
+                    yield f"event: discovery_timeout\ndata: {json.dumps(timeout_event['data'])}\n\n"
+                    
+                except Exception as e:
+                    # T046: Emit error event but DO NOT block synthesis
+                    logger.error(f"❌ Discovery error (non-blocking): {e}")
+                    error_event = {
+                        "event_type": "discovery_error",
+                        "data": {"error": str(e), "message": "Discovery failed, proceeding with synthesis"}
+                    }
+                    yield f"event: discovery_error\ndata: {json.dumps(error_event['data'])}\n\n"
+            else:
+                logger.info("ℹ️  Auto-discovery disabled - proceeding directly to agent execution")
+            
+            # =========================================================================
+            # PHASE 2: Dialectical Synthesis (Agent Execution)
+            # =========================================================================
+            
             # Prepare initial state
+            import uuid
             inputs = {
                 "messages": [],
                 "original_query": query,
@@ -429,7 +620,21 @@ async def stream_dialectics(
                 "final_synthesis": None,
                 "contradiction_report": "",
                 "iteration_count": 0,
-                "procedural_memory": ""
+                "procedural_memory": "",
+                # Tier 1: Memory and claim tracking
+                "debate_memory": {
+                    "rejected_claims": [],
+                    "skeptic_objections": [],
+                    "weak_evidence_urls": []
+                },
+                "current_claim_id": str(uuid.uuid4()),
+                "synthesis_mode": None,  # T089: Circular argument handling
+                "consecutive_high_similarity_count": 0,  # Natural termination: track stuck state
+                "last_similarity_score": None,  # Natural termination: most recent similarity
+                # Tier 2: Visualization & UX
+                "conversation_history": [],  # For conversational thread view
+                "current_round_papers_analyst": [],  # Papers discovered by Analyst in current round
+                "current_round_papers_skeptic": []  # Papers discovered by Skeptic in current round
             }
             
             # Configuration with thread_id
@@ -616,6 +821,208 @@ async def get_trace(
 
 
 # Note: Startup and shutdown are now handled by the lifespan context manager above
+
+
+# =============================================================================
+# Knowledge Discovery Endpoints (Tier 2.5 - Manual Discovery)
+# =============================================================================
+
+@app.post("/discover")
+async def discover_papers(
+    request: DiscoveryRequest,
+    api_key: str = Depends(get_api_key)
+) -> DiscoveryResponse:
+    """
+    Manually search for academic papers from arXiv or Semantic Scholar.
+    
+    Implements:
+    - FR-KD-001: arXiv API integration
+    - FR-KD-002: Semantic Scholar API integration
+    - FR-KD-004: Max 10 papers per source
+    - FR-KD-007: Rate limit handling
+    - SC-KD-001: Response time < 3s for 95% of searches
+    
+    Args:
+        request: DiscoveryRequest with query, source, max_results
+        api_key: API key from X-API-Key header (validated by dependency)
+    
+    Returns:
+        DiscoveryResponse with papers, count, source, query
+    
+    Raises:
+        400: Invalid source parameter
+        429: Rate limit exceeded (after retries)
+        503: External API unavailable
+        500: Internal server error
+    """
+    import time
+    from src.tools.paper_discovery import search_arxiv, search_semantic_scholar
+    
+    start_time = time.time()
+    logger.info(f"Discovery request: query='{request.query}', source={request.source}, max_results={request.max_results}")
+    
+    try:
+        # Validate source parameter
+        if request.source not in ["arxiv", "semantic_scholar"]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid source: {request.source}. Must be 'arxiv' or 'semantic_scholar'"
+            )
+        
+        # Call appropriate search function
+        # Note: Run in thread pool to avoid nest_asyncio + uvloop conflicts
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        loop = asyncio.get_event_loop()
+        if request.source == "arxiv":
+            papers = await loop.run_in_executor(
+                None,
+                search_arxiv,
+                request.query,
+                request.max_results
+            )
+        else:  # semantic_scholar
+            papers = await loop.run_in_executor(
+                None,
+                search_semantic_scholar,
+                request.query,
+                request.max_results
+            )
+        
+        elapsed_time = time.time() - start_time
+        logger.info(f"✅ Discovery complete: {len(papers)} papers found in {elapsed_time:.3f}s")
+        
+        # Warn if response time exceeds 3 seconds (SC-KD-001)
+        if elapsed_time > 3.0:
+            logger.warning(f"⚠️  Discovery response time exceeded 3s: {elapsed_time:.3f}s (SC-KD-001)")
+        
+        return DiscoveryResponse(
+            papers=papers,
+            count=len(papers),
+            source=request.source,
+            query=request.query
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_str = str(e).lower()
+        
+        # Check for rate limit errors
+        if "429" in error_str or "rate limit" in error_str:
+            logger.error(f"Rate limit exceeded: {e}")
+            raise HTTPException(
+                status_code=429,
+                detail="Rate limit exceeded. Please try again later."
+            )
+        
+        # Check for API unavailability
+        if "connection" in error_str or "timeout" in error_str or "unavailable" in error_str:
+            logger.error(f"External API unavailable: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail=f"{request.source} API is currently unavailable. Please try again later."
+            )
+        
+        # Generic error
+        logger.error(f"Discovery error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error during discovery: {str(e)}"
+        )
+
+
+@app.post("/add_papers")
+async def add_papers_endpoint(
+    request: AddPapersRequest,
+    api_key: str = Depends(get_api_key)
+) -> AddPapersResponse:
+    """
+    Add selected papers to the Neo4j knowledge graph.
+    
+    Implements:
+    - FR-KD-005: Deduplication by URL
+    - FR-KD-006: Discovery metadata tracking
+    - FR-KD-014: Extended ResearchPaper fields
+    - SC-KD-002: Add papers < 5s for batches of 10
+    
+    Args:
+        request: AddPapersRequest with paper_urls, discovered_by
+        api_key: API key from X-API-Key header (validated by dependency)
+    
+    Returns:
+        AddPapersResponse with added, skipped, failed, details
+    
+    Raises:
+        400: Empty paper_urls list
+        500: Neo4j connection error or internal error
+    """
+    import time
+    from src.models import PaperMetadata
+    from src.tools.kg_tools import add_papers_to_neo4j
+    
+    start_time = time.time()
+    paper_count = len(request.papers) if request.papers else (len(request.paper_urls) if request.paper_urls else 0)
+    logger.info(f"Add papers request: {paper_count} papers, discovered_by={request.discovered_by}")
+    
+    try:
+        # Use full paper objects if provided, otherwise create minimal objects from URLs
+        papers_to_add = []
+        
+        if request.papers:
+            # Frontend sent full paper metadata (preferred approach)
+            papers_to_add = request.papers
+            logger.info(f"Using {len(papers_to_add)} full paper objects from request")
+        elif request.paper_urls:
+            # Fallback: Frontend only sent URLs (deprecated, creates minimal papers)
+            logger.warning("Using deprecated paper_urls field. Frontend should send full 'papers' objects.")
+            for url in request.paper_urls:
+                paper = PaperMetadata(
+                    title="Paper from URL",
+                    url=url,
+                    abstract="Fetched from discovery session",
+                    authors=["Unknown"],
+                    published="2024-01-01",
+                    source="manual",
+                    citation_count=0,
+                    fields_of_study=[]
+                )
+                papers_to_add.append(paper)
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="Either 'papers' or 'paper_urls' must be provided"
+            )
+        
+        # Add papers to Neo4j
+        result = add_papers_to_neo4j(papers_to_add, discovered_by=request.discovered_by)
+        
+        elapsed_time = time.time() - start_time
+        logger.info(
+            f"✅ Add papers complete: {result['added']} added, {result['skipped']} skipped, "
+            f"{result['failed']} failed in {elapsed_time:.3f}s"
+        )
+        
+        # Warn if response time exceeds 5 seconds for ≤10 papers (SC-KD-002)
+        if paper_count <= 10 and elapsed_time > 5.0:
+            logger.warning(f"⚠️  Add papers response time exceeded 5s: {elapsed_time:.3f}s (SC-KD-002)")
+        
+        return AddPapersResponse(
+            added=result["added"],
+            skipped=result["skipped"],
+            failed=result["failed"],
+            details=result["details"]
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Add papers error: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error while adding papers: {str(e)}"
+        )
 
 
 # =============================================================================

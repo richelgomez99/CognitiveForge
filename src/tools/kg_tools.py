@@ -38,24 +38,27 @@ def _get_neo4j_connection():
     return uri, user, password
 
 
-def query_knowledge_graph(query: str) -> str:
+def query_knowledge_graph(query: str, claim_id: str = None) -> str:
     """
     Query the Neo4j knowledge graph using natural language.
     
     Uses GraphCypherQAChain to convert natural language queries to Cypher
     and retrieve relevant context from the knowledge graph.
     
+    Tier 1: Enhanced to prioritize papers discovered for the current claim (US1).
+    
     Implements FR-T1-006: Query Neo4j for contextual information
     
     Args:
         query: Natural language research query
+        claim_id: Optional UUID of current claim for prioritizing claim-specific papers (Tier 1)
     
     Returns:
         str: Context from knowledge graph, or empty string on failure
     
     Example:
-        >>> context = query_knowledge_graph("What is LangGraph?")
-        >>> # Returns relevant research paper abstracts and relationships
+        >>> context = query_knowledge_graph("What is LangGraph?", claim_id="abc-123")
+        >>> # Returns relevant research paper abstracts, prioritizing papers for this claim
     """
     try:
         uri, user, password = _get_neo4j_connection()
@@ -79,7 +82,27 @@ def query_knowledge_graph(query: str) -> str:
             temperature=0
         )
         
-        # Create GraphCypherQAChain
+        # T060: Add schema refresh and prioritization hint for recent papers
+        graph.refresh_schema()
+        
+        # Create GraphCypherQAChain with enhanced instructions
+        # Note: GraphCypherQAChain uses LLM to generate Cypher dynamically
+        # We add context to prioritize claim-specific and recently discovered papers
+        
+        # Tier 1: T017 - Add claim-specific prioritization
+        priority_hints = []
+        if claim_id:
+            priority_hints.append(f"HIGHEST PRIORITY: Papers where discovered_for_claim_id = '{claim_id}' (discovered specifically for this claim)")
+        priority_hints.append("Priority: Papers discovered recently (within last 7 days) using discovered_at timestamp")
+        priority_hints.append("Context: Papers with higher citation_count tend to be more authoritative")
+        
+        priority_context = "\n".join(priority_hints)
+        
+        enhanced_query = f"""{query}
+
+Priority Context:
+{priority_context}"""
+        
         chain = GraphCypherQAChain.from_llm(
             llm=llm,
             graph=graph,
@@ -87,8 +110,8 @@ def query_knowledge_graph(query: str) -> str:
             allow_dangerous_requests=True  # Required for executing generated Cypher
         )
         
-        # Execute query
-        result = chain.invoke({"query": query})
+        # Execute query with enhanced instructions
+        result = chain.invoke({"query": enhanced_query})
         
         # Extract and return context
         context = result.get("result", "")
@@ -216,4 +239,141 @@ def get_insight_count() -> int:
     except Exception as e:
         logger.error(f"Failed to get insight count: {e}")
         return -1
+
+
+def add_papers_to_neo4j(papers: list, discovered_by: str, claim_id: str = "unknown", iteration_number: int = 0) -> dict:
+    """
+    Add papers to Neo4j knowledge graph with deduplication.
+    
+    Uses MERGE operation to prevent duplicate papers (by URL).
+    Supports extended ResearchPaper schema with discovery metadata.
+    
+    Tier 1: Enhanced to track claim-specific discovery (US1, T027).
+    
+    Implements:
+    - FR-KD-005: Deduplication by URL
+    - FR-KD-006: Discovery metadata tracking
+    - FR-KD-014: Extended ResearchPaper fields
+    - Tier 1: Claim-specific paper tagging
+    
+    Args:
+        papers: List of PaperMetadata objects to add
+        discovered_by: Discovery method identifier (e.g., "manual", "query:...", "analyst_keyword", "skeptic_counter")
+        claim_id: UUID of the claim this paper was discovered for (Tier 1)
+        iteration_number: Which iteration/round of debate (Tier 1)
+    
+    Returns:
+        dict: {
+            "added": int,       # Papers successfully added
+            "skipped": int,     # Papers skipped (duplicates)
+            "failed": int,      # Papers that failed to add
+            "details": List[str]  # Detailed messages
+        }
+    
+    Example:
+        >>> from src.models import PaperMetadata
+        >>> papers = [PaperMetadata(...), PaperMetadata(...)]
+        >>> result = add_papers_to_neo4j(papers, discovered_by="analyst_keyword", claim_id="abc-123", iteration_number=1)
+        >>> print(f"Added {result['added']}, skipped {result['skipped']}")
+    """
+    # Import PaperMetadata here to avoid circular import
+    from src.models import PaperMetadata
+    
+    added = 0
+    skipped = 0
+    failed = 0
+    details = []
+    
+    try:
+        uri, user, password = _get_neo4j_connection()
+        driver = GraphDatabase.driver(uri, auth=(user, password))
+        
+        with driver.session() as session:
+            for paper in papers:
+                try:
+                    # Convert PaperMetadata to dict if needed
+                    if isinstance(paper, PaperMetadata):
+                        paper_dict = paper.model_dump()
+                    else:
+                        paper_dict = paper
+                    
+                    # Check if paper already exists (deduplication)
+                    check_result = session.run(
+                        "MATCH (p:ResearchPaper {url: $url}) RETURN p",
+                        url=paper_dict['url']
+                    )
+                    
+                    if check_result.single():
+                        skipped += 1
+                        details.append(f"Skipped (duplicate): {paper_dict['title'][:60]}...")
+                        logger.debug(f"Paper already exists: {paper_dict['url']}")
+                        continue
+                    
+                    # Add paper using MERGE (idempotent, prevents race conditions)
+                    # Tier 1: T027 - Add claim_id, iteration_number, discovered_by
+                    result = session.run(
+                        """
+                        MERGE (p:ResearchPaper {url: $url})
+                        ON CREATE SET
+                            p.title = $title,
+                            p.abstract = $abstract,
+                            p.authors = $authors,
+                            p.published = $published,
+                            p.source = $source,
+                            p.citation_count = $citation_count,
+                            p.fields_of_study = $fields_of_study,
+                            p.discovered_at = datetime(),
+                            p.discovered_by = $discovered_by,
+                            p.discovered_for_claim_id = $claim_id,
+                            p.iteration_number = $iteration_number
+                        ON MATCH SET
+                            p.citation_count = $citation_count,
+                            p.fields_of_study = $fields_of_study
+                        RETURN p.title AS title
+                        """,
+                        url=paper_dict['url'],
+                        title=paper_dict['title'],
+                        abstract=paper_dict['abstract'],
+                        authors=paper_dict['authors'],
+                        claim_id=claim_id,
+                        iteration_number=iteration_number,
+                        published=paper_dict['published'],
+                        source=paper_dict['source'],
+                        citation_count=paper_dict.get('citation_count', 0),
+                        fields_of_study=paper_dict.get('fields_of_study', []),
+                        discovered_by=discovered_by
+                    )
+                    
+                    if result.single():
+                        added += 1
+                        details.append(f"Added: {paper_dict['title'][:60]}...")
+                        logger.info(f"Added paper: {paper_dict['title'][:60]}... (source: {paper_dict['source']})")
+                    
+                except Exception as e:
+                    failed += 1
+                    details.append(f"Failed: {paper_dict.get('title', 'Unknown')[:60]}... - Error: {str(e)}")
+                    logger.error(f"Failed to add paper: {e}")
+                    continue
+        
+        driver.close()
+        
+        logger.info(
+            f"Paper ingestion complete: {added} added, {skipped} skipped, {failed} failed"
+        )
+        
+        return {
+            "added": added,
+            "skipped": skipped,
+            "failed": failed,
+            "details": details
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to connect to Neo4j: {e}")
+        return {
+            "added": 0,
+            "skipped": 0,
+            "failed": len(papers),
+            "details": [f"Neo4j connection error: {str(e)}"]
+        }
 

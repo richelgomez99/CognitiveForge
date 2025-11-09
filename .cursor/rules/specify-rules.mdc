@@ -1,0 +1,31 @@
+# CognitiveForge Development Guidelines
+
+Auto-generated from all feature plans. Last updated: 2025-11-08
+
+## Active Technologies
+- No new storage (UI-only changes, metadata cached in Neo4j) (004-visualization-ux-tier2)
+
+- Python 3.11+ (existing CognitiveForge requirement) (002-knowledge-discovery)
+
+## Project Structure
+
+```text
+src/
+tests/
+```
+
+## Commands
+
+cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] pytest [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] ruff check .
+
+## Code Style
+
+Python 3.11+ (existing CognitiveForge requirement): Follow standard conventions
+
+## Recent Changes
+- 004-visualization-ux-tier2: Added Python 3.11+
+
+- 002-knowledge-discovery: Added Python 3.11+ (existing CognitiveForge requirement)
+
+<!-- MANUAL ADDITIONS START -->
+<!-- MANUAL ADDITIONS END -->
