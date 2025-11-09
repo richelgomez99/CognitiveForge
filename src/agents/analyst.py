@@ -246,10 +246,23 @@ Be thorough, academic, and intellectually honest in your analysis."""
             logger.info(f"Thesis generated successfully: {thesis.claim[:100]}...")
             logger.info(f"Evidence count: {len(thesis.evidence)}")
             
+            # Tier 2 (T039): Track papers discovered in this round for conversational thread view
+            # Store full metadata (title, authors, url) for proper citation formatting
+            papers_discovered_this_round = [
+                {
+                    "title": paper.title,
+                    "authors": paper.authors[:3] if paper.authors else ["Unknown"],  # Limit to 3 authors
+                    "url": paper.url
+                }
+                for paper in discovered_papers
+            ]
+            logger.info(f"📚 Tracked {len(papers_discovered_this_round)} papers for round visualization")
+            
             # Return updated state
             return {
                 "current_thesis": thesis,
-                "messages": [f"Analyst: {thesis.claim}"]
+                "messages": [f"Analyst: {thesis.claim}"],
+                "current_round_papers_analyst": papers_discovered_this_round  # Tier 2: US1
             }
             
         except ValidationError as e:

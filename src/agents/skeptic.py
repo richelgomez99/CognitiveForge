@@ -87,7 +87,8 @@ def skeptic_node(state: AgentState) -> Dict[str, Any]:
                 "contradiction_report": "CIRCULAR ARGUMENT (auto-rejected based on similarity)",
                 "messages": [f"Skeptic: {antithesis.critique[:100]}..."],
                 "debate_memory": updated_memory,
-                "last_similarity_score": max_similarity  # Natural termination: track similarity
+                "last_similarity_score": max_similarity,  # Natural termination: track similarity
+                "current_round_papers_skeptic": []  # Tier 2 (T040): No counter-papers for circular arguments
             }
     
     # No circular argument detected, proceed with full LLM evaluation
@@ -229,13 +230,26 @@ Remember: Your goal is dialectical progress, not endless debate. If the thesis i
                     skeptic_objection=antithesis.critique[:200]
                 )
             
+            # Tier 2 (T040): Track counter-papers discovered in this round for conversational thread view
+            # Store full metadata (title, authors, url) for proper citation formatting
+            counter_papers_metadata = [
+                {
+                    "title": paper.title,
+                    "authors": paper.authors[:3] if paper.authors else ["Unknown"],  # Limit to 3 authors
+                    "url": paper.url
+                }
+                for paper in counter_papers
+            ]
+            logger.info(f"📖 Tracked {len(counter_papers_metadata)} counter-papers for round visualization")
+            
             # Return updated state
             return {
                 "current_antithesis": antithesis,
                 "contradiction_report": contradiction_report,
                 "messages": [f"Skeptic: {antithesis.critique[:150]}..."],
                 "debate_memory": updated_memory,
-                "last_similarity_score": None  # Natural termination: no circular argument detected
+                "last_similarity_score": None,  # Natural termination: no circular argument detected
+                "current_round_papers_skeptic": counter_papers_metadata  # Tier 2: US1
             }
             
         except ValidationError as e:

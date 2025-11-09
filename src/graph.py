@@ -97,6 +97,29 @@ def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
             state["synthesis_mode"] = "impasse"
             return "synthesizer"
     
+    # Tier 2 (T038): Populate conversation_history before routing
+    thesis = state.get("current_thesis")
+    papers_analyst = state.get("current_round_papers_analyst", [])
+    papers_skeptic = state.get("current_round_papers_skeptic", [])
+    
+    if thesis and antithesis:
+        # Create conversation round
+        from src.models import ConversationRound
+        conversation_history = state.get("conversation_history", [])
+        round_num = len(conversation_history) + 1
+        
+        new_round: ConversationRound = {
+            "round_number": round_num,
+            "thesis": thesis,
+            "antithesis": antithesis,
+            "papers_analyst": papers_analyst,
+            "papers_skeptic": papers_skeptic
+        }
+        
+        conversation_history.append(new_round)
+        state["conversation_history"] = conversation_history
+        logger.info(f"📝 Added Round {round_num} to conversation history")
+    
     # Check if we should loop back
     if antithesis and antithesis.contradiction_found and iteration_count < max_iterations:
         # Increment iteration count (will be incremented in state update)
