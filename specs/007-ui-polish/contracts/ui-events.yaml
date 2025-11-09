@@ -1,0 +1,617 @@
+# UI Event Contracts: Real-time Activity Feed
+
+**Feature**: 007-ui-polish  
+**Created**: 2025-11-09  
+**Purpose**: Define Server-Sent Events (SSE) schema for real-time UI updates
+
+---
+
+## Event Format
+
+All events follow the SSE (Server-Sent Events) specification:
+
+```
+event: {event_type}
+data: {json_payload}
+
+```
+
+**Notes**:
+- Each event consists of `event:` line followed by `data:` line
+- `data:` contains JSON payload
+- Events are separated by blank lines
+- Client parses and transforms into `ActivityEvent` objects (see data-model.md)
+
+---
+
+## Discovery Phase Events
+
+### 1. `keyword_extraction`
+
+**Purpose**: Indicates keyword extraction from user query has started/completed
+
+**Payload**:
+```json
+{
+  "keywords": ["quantum computing", "drug discovery", "applications"],
+  "num_keywords": 3,
+  "duration": 0.5
+}
+```
+
+**Fields**:
+- `keywords` (array[string]): Extracted keywords for discovery
+- `num_keywords` (integer): Count of keywords
+- `duration` (float, optional): Time taken in seconds
+
+**UI Display**:
+```
+🔍 Keyword Extraction                    [✓]  0.5s
+  ↳ 3 keywords: "quantum computing", "drug discovery", "applications"
+```
+
+---
+
+### 2. `discovery_start`
+
+**Purpose**: Paper discovery process has begun
+
+**Payload**:
+```json
+{
+  "message": "Searching for papers...",
+  "sources": ["arXiv", "Semantic Scholar"]
+}
+```
+
+**Fields**:
+- `message` (string): Human-readable status message
+- `sources` (array[string]): Data sources being searched
+
+**UI Display**:
+```
+📚 Discovery Started                     [⏳]  
+  ↳ Searching arXiv, Semantic Scholar
+```
+
+---
+
+### 3. `source_searching`
+
+**Purpose**: Currently searching a specific source
+
+**Payload**:
+```json
+{
+  "source": "arXiv",
+  "message": "Searching arXiv..."
+}
+```
+
+**Fields**:
+- `source` (string): Source name ("arXiv" | "Semantic Scholar")
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+🔎 Searching arXiv...                    [⏳]  
+```
+
+---
+
+### 4. `paper_found`
+
+**Purpose**: A single paper was found (emitted for each paper)
+
+**Payload**:
+```json
+{
+  "title": "Quantum Computing Applications in Drug Discovery",
+  "authors": ["Smith, J.", "Jones, A.", "Chen, L."],
+  "url": "http://arxiv.org/abs/2301.12345",
+  "source": "arXiv",
+  "year": 2023
+}
+```
+
+**Fields**:
+- `title` (string): Paper title
+- `authors` (array[string]): Author names
+- `url` (string): Full URL to paper
+- `source` (string): "arXiv" | "Semantic Scholar"
+- `year` (integer, optional): Publication year
+
+**UI Display**:
+```
+📄 Found: "Quantum Computing Applications..." by Smith et al.
+```
+
+---
+
+### 5. `papers_ingesting`
+
+**Purpose**: Papers are being added to Neo4j knowledge graph
+
+**Payload**:
+```json
+{
+  "count": 13,
+  "message": "Adding 13 papers to knowledge graph..."
+}
+```
+
+**Fields**:
+- `count` (integer): Number of papers being ingested
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+💾 Adding 13 papers to knowledge graph...   [⏳]  
+```
+
+---
+
+### 6. `discovery_complete`
+
+**Purpose**: Paper discovery finished successfully
+
+**Payload**:
+```json
+{
+  "added": 13,
+  "skipped": 2,
+  "duration": 8.5,
+  "message": "Discovery complete: 13 papers added, 2 skipped"
+}
+```
+
+**Fields**:
+- `added` (integer): Papers successfully added
+- `skipped` (integer): Papers skipped (duplicates)
+- `duration` (float): Total discovery duration in seconds
+- `message` (string): Human-readable summary
+
+**UI Display**:
+```
+✅ Discovery Complete: 13 papers added, 2 skipped    [✓]  8.5s
+```
+
+---
+
+### 7. `discovery_error`
+
+**Purpose**: Paper discovery encountered an error
+
+**Payload**:
+```json
+{
+  "error": "Semantic Scholar API rate limit exceeded",
+  "source": "Semantic Scholar",
+  "recoverable": true
+}
+```
+
+**Fields**:
+- `error` (string): Error message
+- `source` (string): Source that failed
+- `recoverable` (boolean): Can synthesis continue without this source?
+
+**UI Display**:
+```
+⚠️ Discovery Error: Semantic Scholar API rate limit exceeded    [!]  
+  ↳ Continuing with arXiv results only
+```
+
+---
+
+### 8. `discovery_timeout`
+
+**Purpose**: Discovery took too long, proceeding anyway
+
+**Payload**:
+```json
+{
+  "message": "Discovery timeout - proceeding with synthesis",
+  "partial_results": 5
+}
+```
+
+**Fields**:
+- `message` (string): Timeout explanation
+- `partial_results` (integer): Papers found before timeout
+
+**UI Display**:
+```
+⏱️ Discovery Timeout: Proceeding with 5 papers    [⚠️]  
+```
+
+---
+
+## Debate Phase Events
+
+### 9. `analyst_start`
+
+**Purpose**: Analyst agent began generating thesis
+
+**Payload**:
+```json
+{
+  "round": 1,
+  "message": "Analyst generating thesis..."
+}
+```
+
+**Fields**:
+- `round` (integer): Current round number
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+🔬 Analyst generating thesis (Round 1)...    [⏳]  
+```
+
+---
+
+### 10. `analyst_complete`
+
+**Purpose**: Analyst completed thesis generation
+
+**Payload**:
+```json
+{
+  "round": 1,
+  "claim": "Quantum computing shows promising applications in drug discovery...",
+  "papers_cited": 8,
+  "duration": 5.2,
+  "message": "Thesis generated"
+}
+```
+
+**Fields**:
+- `round` (integer): Current round number
+- `claim` (string): Thesis claim (first 100 chars for summary)
+- `papers_cited` (integer): Number of papers cited
+- `duration` (float): Generation time in seconds
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+✅ Analyst Thesis Complete (Round 1): 8 papers cited    [✓]  5.2s
+  ↳ "Quantum computing shows promising applications..."
+```
+
+---
+
+### 11. `skeptic_start`
+
+**Purpose**: Skeptic agent began generating antithesis
+
+**Payload**:
+```json
+{
+  "round": 1,
+  "message": "Skeptic evaluating thesis..."
+}
+```
+
+**Fields**:
+- `round` (integer): Current round number
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+🔍 Skeptic evaluating thesis (Round 1)...    [⏳]  
+```
+
+---
+
+### 12. `skeptic_complete`
+
+**Purpose**: Skeptic completed critique
+
+**Payload**:
+```json
+{
+  "round": 1,
+  "contradiction_found": true,
+  "counter_papers": 3,
+  "critique_summary": "Thesis overstates current capabilities...",
+  "duration": 4.8,
+  "message": "Contradictions identified"
+}
+```
+
+**Fields**:
+- `round` (integer): Current round number
+- `contradiction_found` (boolean): Did Skeptic find issues?
+- `counter_papers` (integer): Counter-evidence papers found
+- `critique_summary` (string): First 100 chars of critique
+- `duration` (float): Generation time in seconds
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+✅ Skeptic Critique Complete (Round 1): Contradictions found    [✓]  4.8s
+  ↳ "Thesis overstates current capabilities..."
+  ↳ 3 counter-papers discovered
+```
+
+---
+
+### 13. `round_complete`
+
+**Purpose**: A full debate round (Analyst + Skeptic) completed
+
+**Payload**:
+```json
+{
+  "round": 1,
+  "outcome": "continue",
+  "total_rounds": 3,
+  "message": "Round 1 complete - continuing debate"
+}
+```
+
+**Fields**:
+- `round` (integer): Completed round number
+- `outcome` (string): "continue" | "resolved" | "max_iterations"
+- `total_rounds` (integer): Total rounds completed so far
+- `message` (string): Human-readable summary
+
+**UI Display**:
+```
+🔄 Round 1 Complete: Continuing debate    [✓]  
+  ↳ 3 rounds total
+```
+
+---
+
+## Synthesis Phase Events
+
+### 14. `synthesis_start`
+
+**Purpose**: Synthesizer agent began generating final synthesis
+
+**Payload**:
+```json
+{
+  "rounds_analyzed": 3,
+  "mode": "standard",
+  "message": "Generating final synthesis..."
+}
+```
+
+**Fields**:
+- `rounds_analyzed` (integer): Number of debate rounds
+- `mode` (string): "standard" | "impasse" | "exhausted_attempts"
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+💡 Generating Synthesis (3 rounds analyzed)...    [⏳]  
+```
+
+---
+
+### 15. `synthesis_complete`
+
+**Purpose**: Final synthesis generated successfully
+
+**Payload**:
+```json
+{
+  "novel_insight": "Quantum computing's potential in drug discovery...",
+  "confidence_score": 78.5,
+  "novelty_score": 82.3,
+  "key_papers": 10,
+  "duration": 12.3,
+  "message": "Synthesis complete"
+}
+```
+
+**Fields**:
+- `novel_insight` (string): First 100 chars of synthesis
+- `confidence_score` (float): 0-100 confidence
+- `novelty_score` (float): 0-100 novelty
+- `key_papers` (integer): Number of key papers in synthesis
+- `duration` (float): Generation time in seconds
+- `message` (string): Human-readable status
+
+**UI Display**:
+```
+🎉 Synthesis Complete                    [✓]  12.3s
+  ↳ Confidence: 78.5% | Novelty: 82.3%
+  ↳ 10 key papers synthesized
+```
+
+---
+
+## System Events
+
+### 16. `error`
+
+**Purpose**: Critical error occurred
+
+**Payload**:
+```json
+{
+  "error": "Gemini API rate limit exceeded",
+  "context": "analyst_generation",
+  "recoverable": false,
+  "message": "Error: Gemini API rate limit exceeded"
+}
+```
+
+**Fields**:
+- `error` (string): Error message
+- `context` (string): Where error occurred
+- `recoverable` (boolean): Can process continue?
+- `message` (string): Human-readable error
+
+**UI Display**:
+```
+❌ Error: Gemini API rate limit exceeded    [!]  
+  ↳ Context: analyst_generation
+```
+
+---
+
+### 17. `warning`
+
+**Purpose**: Non-critical warning (degraded performance, etc.)
+
+**Payload**:
+```json
+{
+  "warning": "Using fallback model due to primary model unavailability",
+  "severity": "medium",
+  "message": "Warning: Using fallback model"
+}
+```
+
+**Fields**:
+- `warning` (string): Warning message
+- `severity` (string): "low" | "medium" | "high"
+- `message` (string): Human-readable warning
+
+**UI Display**:
+```
+⚠️ Warning: Using fallback model    [⚠️]  
+```
+
+---
+
+## Event Ordering Guarantees
+
+### 1. **Discovery Phase** (Sequential)
+
+```
+1. keyword_extraction       (once)
+2. discovery_start          (once)
+3. source_searching         (per source)
+4. paper_found              (0-N times per source)
+5. papers_ingesting         (once)
+6. discovery_complete       (once) OR discovery_error/timeout
+```
+
+### 2. **Debate Phase** (Cyclic, 1-N rounds)
+
+```
+Per round:
+1. analyst_start            (once per round)
+2. analyst_complete         (once per round)
+3. skeptic_start            (once per round)
+4. skeptic_complete         (once per round)
+5. round_complete           (once per round)
+
+Repeat 1-5 until convergence or max iterations
+```
+
+### 3. **Synthesis Phase** (Sequential)
+
+```
+1. synthesis_start          (once)
+2. synthesis_complete       (once)
+```
+
+---
+
+## Client-Side Processing
+
+### Pseudo-code for SSE Consumer
+
+```python
+def consume_sse_stream(url: str, api_key: str):
+    """
+    Consume SSE stream and update UI in real-time.
+    """
+    response = requests.get(url, headers={"X-API-Key": api_key}, stream=True)
+    
+    event_type = None
+    event_data = {}
+    
+    for line in response.iter_lines(decode_unicode=True):
+        if line.startswith('event:'):
+            event_type = line[6:].strip()
+        
+        elif line.startswith('data:'):
+            event_data = json.loads(line[5:].strip())
+            
+            # Transform SSE event to ActivityEvent (see data-model.md)
+            activity_event = transform_sse_event(event_type, event_data)
+            
+            # Update UI state
+            st.session_state.activity_events.append(activity_event)
+            
+            # Update phase progress
+            update_phase_progress(event_type, event_data)
+            
+            # If round complete, update conversation history
+            if event_type in ['analyst_complete', 'skeptic_complete']:
+                update_conversation_ui(event_data)
+            
+            # Trigger Streamlit rerun to update UI
+            st.rerun()
+        
+        elif line == '':
+            # Blank line = event complete, reset
+            event_type = None
+            event_data = {}
+```
+
+---
+
+## Validation & Testing
+
+### 1. **Event Schema Validation**
+
+All events MUST conform to the schema defined above. Backend MUST validate:
+- Required fields are present
+- Field types match specification
+- Enum values are valid
+
+### 2. **Event Order Testing**
+
+Test suite MUST verify:
+- Events arrive in expected order
+- No duplicate events (except `paper_found`)
+- All phases complete with final event
+
+### 3. **Error Handling**
+
+UI MUST handle:
+- Missing fields (use defaults)
+- Malformed JSON (skip event, log warning)
+- Unexpected event types (ignore gracefully)
+- Connection interruption (show reconnect button)
+
+---
+
+## Backward Compatibility
+
+**Current SSE Events** (Tier 2):
+- Already emit most of these events
+- May have slightly different field names
+
+**Migration Strategy**:
+1. Backend emits BOTH old and new event formats (Phase 1)
+2. UI consumes new format if available, falls back to old (Phase 2)
+3. Deprecate old format after 007-ui-polish is complete (Phase 3)
+
+**No Breaking Changes**: Existing Tier 2 UI continues to work during migration.
+
+---
+
+## Summary
+
+**Total Event Types**: 17 (8 discovery, 5 debate, 2 synthesis, 2 system)
+
+**Key Features**:
+- Structured JSON payloads
+- Human-readable messages for fallback
+- Duration tracking for performance monitoring
+- Error/warning severity levels
+- Collapsible details for complex events
+
+**Next Steps**: Create quickstart.md for testing guidance
+
