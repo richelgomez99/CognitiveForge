@@ -294,6 +294,48 @@ EVENT_ICONS = {
     "warning": "⚠️",
 }
 
+CITE_PATTERN = re.compile(r"\[CITE:\s*([^\]]+)\]")
+
+
+def enrich_citations(text: str, papers: List[Dict[str, Any]]) -> str:
+    """
+    Replace [CITE: url] markers with human-friendly markdown links using paper titles.
+
+    Args:
+        text: Original reasoning or critique text containing [CITE: url] markers
+        papers: List of paper dicts with metadata (title, url, author_display)
+
+    Returns:
+        Markdown string with citations replaced by [Paper Title](url) links.
+    """
+    if not text or not papers:
+        return text
+
+    url_to_title: Dict[str, str] = {}
+    for paper in papers:
+        url = paper.get("url") or paper.get("source_url")
+        if not url:
+            continue
+
+        normalized_url = url.rstrip("/")
+        title = paper.get("title")
+        if not title or title.lower() in {"unknown", "unknown title", "untitled"}:
+            title_candidate = paper.get("author_display") or paper.get("authors")
+            if isinstance(title_candidate, list):
+                title_candidate = ", ".join(title_candidate[:3]) + (" et al." if len(title_candidate) > 3 else "")
+            title = title_candidate if title_candidate else normalized_url
+
+        url_to_title[normalized_url] = title
+
+    def _replace(match: re.Match) -> str:
+        raw_url = match.group(1).strip()
+        normalized = raw_url.rstrip("/")
+        title = url_to_title.get(normalized) or url_to_title.get(raw_url)
+        display_title = title or normalized
+        return f"[{display_title}]({raw_url})"
+
+    return CITE_PATTERN.sub(_replace, text)
+
 
 # T013: Transform paper dict to PaperCitationUI format
 def transform_paper(paper: Dict[str, Any]) -> Dict[str, Any]:
@@ -495,15 +537,17 @@ def render_analyst_message(msg: Dict[str, Any]) -> None:
     with st.chat_message("user", avatar="🔬"):
         st.markdown("**ANALYST**")
         st.markdown(f"**Claim:** {msg.get('claim', 'N/A')}")
+
+        papers = msg.get('papers', [])
         
         # Reasoning in collapsible expander (user feedback: bring back expandable sections)
         reasoning = msg.get('reasoning', 'N/A')
         if reasoning and reasoning != 'N/A':
             with st.expander("📋 View Reasoning"):
-                st.write(reasoning)
+                enriched_reasoning = enrich_citations(reasoning, papers)
+                st.markdown(enriched_reasoning)
         
         # T025: Collapsible papers section
-        papers = msg.get('papers', [])
         if papers:
             with st.expander(f"📚 Papers Cited ({len(papers)})"):
                 for paper in papers:
@@ -536,12 +580,13 @@ def render_skeptic_message(msg: Dict[str, Any]) -> None:
         
         # Critique in collapsible expander (user feedback: bring back expandable sections)
         critique = msg.get('critique', 'N/A')
+        papers = msg.get('papers', [])
         if critique and critique != 'N/A':
             with st.expander("🔍 View Critique"):
-                st.write(critique)
+                enriched_critique = enrich_citations(critique, papers)
+                st.markdown(enriched_critique)
         
         # T026: Collapsible counter-papers section
-        papers = msg.get('papers', [])
         if papers:
             with st.expander(f"📖 Counter-Papers ({len(papers)})"):
                 for paper in papers:
