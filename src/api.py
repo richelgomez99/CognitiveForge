@@ -630,7 +630,11 @@ async def stream_dialectics(
                 "current_claim_id": str(uuid.uuid4()),
                 "synthesis_mode": None,  # T089: Circular argument handling
                 "consecutive_high_similarity_count": 0,  # Natural termination: track stuck state
-                "last_similarity_score": None  # Natural termination: most recent similarity
+                "last_similarity_score": None,  # Natural termination: most recent similarity
+                # Tier 2: Visualization & UX
+                "conversation_history": [],  # For conversational thread view
+                "current_round_papers_analyst": [],  # Papers discovered by Analyst in current round
+                "current_round_papers_skeptic": []  # Papers discovered by Skeptic in current round
             }
             
             # Configuration with thread_id
