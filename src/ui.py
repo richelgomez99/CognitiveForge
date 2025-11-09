@@ -1126,36 +1126,8 @@ def stream_dialectics(thread_id: str, query: str, auto_discover: bool = True) ->
                 if synthesis_complete:
                     st.success(f"🎉 Dialectical synthesis complete! ({event_count} events processed)")
                     
-                    # Tier 2 (T041-T047): Display conversational thread view
-                    try:
-                        # Query final state to get conversation_history
-                        state_response = requests.get(
-                            f"{API_BASE_URL}/get_state/{thread_id}",
-                            headers={"X-API-Key": API_KEY},
-                            timeout=5
-                        )
-                        
-                        if state_response.status_code == 200:
-                            state = state_response.json()
-                            conversation_history = state.get("conversation_history", [])
-                            
-                            # T019-T027: New conversational debate view
-                            if conversation_history:
-                                st.markdown("---")
-                                
-                                # Transform backend data to UI format
-                                conversation_ui = [
-                                    transform_conversation_round(round_data)
-                                    for round_data in conversation_history
-                                ]
-                                
-                                # Render conversational debate view
-                                render_conversational_debate(conversation_ui)
-                                
-                                st.markdown("---")
-                    except Exception as e:
-                        # Don't fail the entire UI if thread view fails
-                        st.warning(f"⚠️ Could not load conversation history: {str(e)}")
+                    # Note: Conversational debate view is already rendered in real-time
+                    # during SSE streaming (no need to query /get_state)
                     
                     # Add to history
                     st.session_state.query_history.append({
