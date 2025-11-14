@@ -137,3 +137,4 @@ specs/tier-*
 .specify/
 .cursor/commands/
 
+chroma_db/
