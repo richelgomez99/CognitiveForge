@@ -119,6 +119,9 @@ specs/**/*.md
 docs/**/*.md
 .specstory/**/*.md
 
+# BUT allow SpecKit documentation (Phase 2 development)
+!.speckit/*.md
+
 # Test Results & Archives  
 archive/
 *.pdf
