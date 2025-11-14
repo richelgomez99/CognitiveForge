@@ -39,11 +39,19 @@ from src.auth import get_api_key
 from src.graph import build_graph
 
 # Import models for type hints
-from src.models import DiscoveryRequest, DiscoveryResponse, AddPapersRequest, AddPapersResponse
+from src.models import (
+    DiscoveryRequest, DiscoveryResponse, AddPapersRequest, AddPapersResponse,
+    # Epic 4: Persistent Memory System
+    UserProfile, Workspace, SessionMetadata, SessionRecord, SessionStatus,
+    CreateSessionRequest, UpdateSessionRequest, SessionListResponse
+)
 
 # Import discovery tools
 from src.tools.paper_discovery import search_arxiv, search_semantic_scholar
 from src.tools.kg_tools import add_papers_to_neo4j
+
+# Epic 4: Import memory store
+from src.tools import memory_store
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -114,6 +122,14 @@ async def lifespan(app: FastAPI):
         # Compile with async checkpointer
         _graph_cache['async_graph'] = workflow.compile(checkpointer=checkpointer)
         logger.info("✅ Graph compiled with AsyncSqliteSaver")
+
+        # Epic 4: Initialize memory system schema
+        logger.info("🧠 Initializing Epic 4 memory system schema...")
+        memory_schema_success = memory_store.initialize_memory_schema()
+        if memory_schema_success:
+            logger.info("✅ Memory system schema initialized successfully")
+        else:
+            logger.warning("⚠️  Memory system schema initialization failed (non-fatal)")
         
         logger.info("")
         logger.info("Endpoints:")
@@ -1022,6 +1038,472 @@ async def add_papers_endpoint(
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error while adding papers: {str(e)}"
+        )
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - Session Management Endpoints
+# =============================================================================
+
+@app.post(
+    "/sessions",
+    tags=["Epic 4: Sessions"],
+    summary="Create a new debate session",
+    description="Create a new session with metadata tracking. Requires X-API-Key header.",
+    response_model=SessionMetadata
+)
+async def create_session_endpoint(
+    request: CreateSessionRequest,
+    user_id: str = Query(..., description="User ID creating the session"),
+    api_key: str = Depends(get_api_key)
+) -> SessionMetadata:
+    """
+    Create a new debate session.
+
+    Epic 4: Task 1 - Session Management & Persistence
+
+    Args:
+        request: CreateSessionRequest with workspace_id, title, query, tags
+        user_id: User ID creating the session
+        api_key: API key from X-API-Key header
+
+    Returns:
+        SessionMetadata of the created session
+
+    Raises:
+        400: Invalid request data
+        500: Internal server error
+    """
+    try:
+        import uuid
+
+        # Generate unique IDs
+        session_id = str(uuid.uuid4())
+        thread_id = f"thread_{session_id}"
+
+        # Create session metadata
+        session = SessionMetadata(
+            session_id=session_id,
+            workspace_id=request.workspace_id,
+            thread_id=thread_id,
+            title=request.title,
+            original_query=request.query,
+            status=SessionStatus.ACTIVE,
+            tags=request.tags
+        )
+
+        # Save to Neo4j
+        success = memory_store.create_session(session, created_by=user_id)
+
+        if success:
+            logger.info(f"✅ Created session: {session.title} ({session.session_id})")
+            return session
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create session in database"
+            )
+
+    except Exception as e:
+        logger.error(f"Error creating session: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.get(
+    "/sessions/{session_id}",
+    tags=["Epic 4: Sessions"],
+    summary="Get session details",
+    description="Retrieve session metadata by ID. Requires X-API-Key header.",
+    response_model=SessionMetadata
+)
+async def get_session_endpoint(
+    session_id: str,
+    api_key: str = Depends(get_api_key)
+) -> SessionMetadata:
+    """
+    Get session details by ID.
+
+    Epic 4: Task 1 - Session Management & Persistence
+
+    Args:
+        session_id: Session identifier
+        api_key: API key from X-API-Key header
+
+    Returns:
+        SessionMetadata if found
+
+    Raises:
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        session = memory_store.get_session(session_id)
+
+        if session:
+            return session
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{session_id}' not found"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving session: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.put(
+    "/sessions/{session_id}",
+    tags=["Epic 4: Sessions"],
+    summary="Update session metadata",
+    description="Update session title, status, or tags. Requires X-API-Key header.",
+    response_model=Dict[str, str]
+)
+async def update_session_endpoint(
+    session_id: str,
+    request: UpdateSessionRequest,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, str]:
+    """
+    Update session metadata.
+
+    Epic 4: Task 1 - Session Management & Persistence
+
+    Args:
+        session_id: Session identifier
+        request: UpdateSessionRequest with title, status, tags
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Success message
+
+    Raises:
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        # Build updates dict from request
+        updates = {}
+        if request.title is not None:
+            updates["title"] = request.title
+        if request.status is not None:
+            updates["status"] = request.status
+        if request.tags is not None:
+            updates["tags"] = request.tags
+
+        success = memory_store.update_session(session_id, **updates)
+
+        if success:
+            logger.info(f"✅ Updated session: {session_id}")
+            return {"message": f"Session '{session_id}' updated successfully"}
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{session_id}' not found"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating session: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.delete(
+    "/sessions/{session_id}",
+    tags=["Epic 4: Sessions"],
+    summary="Delete session",
+    description="Soft delete session by setting status to DELETED. Requires X-API-Key header.",
+    response_model=Dict[str, str]
+)
+async def delete_session_endpoint(
+    session_id: str,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, str]:
+    """
+    Delete session (soft delete).
+
+    Epic 4: Task 1 - Session Management & Persistence
+
+    Args:
+        session_id: Session identifier
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Success message
+
+    Raises:
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        success = memory_store.delete_session(session_id)
+
+        if success:
+            logger.info(f"✅ Deleted session: {session_id}")
+            return {"message": f"Session '{session_id}' deleted successfully"}
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{session_id}' not found"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting session: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.get(
+    "/sessions",
+    tags=["Epic 4: Sessions"],
+    summary="List sessions",
+    description="List sessions in a workspace with pagination. Requires X-API-Key header.",
+    response_model=SessionListResponse
+)
+async def list_sessions_endpoint(
+    workspace_id: str = Query(..., description="Workspace identifier"),
+    status: Optional[str] = Query(None, description="Filter by status (active, paused, completed, archived, deleted)"),
+    page: int = Query(1, description="Page number (1-indexed)", ge=1),
+    page_size: int = Query(20, description="Page size", ge=1, le=100),
+    api_key: str = Depends(get_api_key)
+) -> SessionListResponse:
+    """
+    List sessions in a workspace with pagination.
+
+    Epic 4: Task 1 - Session Management & Persistence
+
+    Args:
+        workspace_id: Workspace identifier
+        status: Optional status filter
+        page: Page number (1-indexed)
+        page_size: Number of sessions per page
+        api_key: API key from X-API-Key header
+
+    Returns:
+        SessionListResponse with sessions, total, page, page_size
+
+    Raises:
+        400: Invalid status parameter
+        500: Internal server error
+    """
+    try:
+        # Parse status if provided
+        session_status = None
+        if status:
+            try:
+                session_status = SessionStatus(status)
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid status: {status}. Must be one of: active, paused, completed, archived, deleted"
+                )
+
+        # Get sessions
+        sessions, total = memory_store.list_sessions(
+            workspace_id=workspace_id,
+            status=session_status,
+            page=page,
+            page_size=page_size
+        )
+
+        logger.info(f"✅ Listed {len(sessions)} sessions (total: {total})")
+
+        return SessionListResponse(
+            sessions=sessions,
+            total=total,
+            page=page,
+            page_size=page_size
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing sessions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - User & Workspace Endpoints
+# =============================================================================
+
+@app.post(
+    "/users",
+    tags=["Epic 4: Users"],
+    summary="Create a new user",
+    description="Create a new user profile. Requires X-API-Key header.",
+    response_model=UserProfile
+)
+async def create_user_endpoint(
+    username: str = Query(..., description="Username"),
+    email: str = Query(..., description="Email address"),
+    api_key: str = Depends(get_api_key)
+) -> UserProfile:
+    """
+    Create a new user profile.
+
+    Epic 4: Task 2 - User/Workspace Isolation
+
+    Args:
+        username: Username (3-50 characters)
+        email: Email address
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Created UserProfile
+
+    Raises:
+        400: Invalid request data
+        500: Internal server error
+    """
+    try:
+        user = UserProfile(
+            username=username,
+            email=email
+        )
+
+        success = memory_store.create_user(user)
+
+        if success:
+            logger.info(f"✅ Created user: {user.username} ({user.user_id})")
+            return user
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create user in database"
+            )
+
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post(
+    "/workspaces",
+    tags=["Epic 4: Workspaces"],
+    summary="Create a new workspace",
+    description="Create a new workspace. Requires X-API-Key header.",
+    response_model=Workspace
+)
+async def create_workspace_endpoint(
+    name: str = Query(..., description="Workspace name"),
+    owner_id: str = Query(..., description="Owner user ID"),
+    description: Optional[str] = Query(None, description="Workspace description"),
+    is_public: bool = Query(False, description="Is workspace public"),
+    api_key: str = Depends(get_api_key)
+) -> Workspace:
+    """
+    Create a new workspace.
+
+    Epic 4: Task 2 - User/Workspace Isolation
+
+    Args:
+        name: Workspace name
+        owner_id: Owner user ID
+        description: Optional workspace description
+        is_public: Whether workspace is public
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Created Workspace
+
+    Raises:
+        400: Invalid request data
+        500: Internal server error
+    """
+    try:
+        workspace = Workspace(
+            name=name,
+            owner_id=owner_id,
+            description=description,
+            is_public=is_public
+        )
+
+        success = memory_store.create_workspace(workspace)
+
+        if success:
+            logger.info(f"✅ Created workspace: {workspace.name} ({workspace.workspace_id})")
+            return workspace
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to create workspace in database"
+            )
+
+    except Exception as e:
+        logger.error(f"Error creating workspace: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.get(
+    "/workspaces/{workspace_id}",
+    tags=["Epic 4: Workspaces"],
+    summary="Get workspace details",
+    description="Retrieve workspace metadata by ID. Requires X-API-Key header.",
+    response_model=Workspace
+)
+async def get_workspace_endpoint(
+    workspace_id: str,
+    api_key: str = Depends(get_api_key)
+) -> Workspace:
+    """
+    Get workspace details by ID.
+
+    Epic 4: Task 2 - User/Workspace Isolation
+
+    Args:
+        workspace_id: Workspace identifier
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Workspace if found
+
+    Raises:
+        404: Workspace not found
+        500: Internal server error
+    """
+    try:
+        workspace = memory_store.get_workspace(workspace_id)
+
+        if workspace:
+            return workspace
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Workspace '{workspace_id}' not found"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving workspace: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
         )
 
 

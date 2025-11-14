@@ -5,10 +5,13 @@ This module defines Pydantic models for structured LLM outputs and the AgentStat
 for LangGraph state management.
 """
 
-from typing import List, Optional, Annotated
+from typing import List, Optional, Annotated, Dict, Any
 from typing_extensions import TypedDict
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, EmailStr
 from langgraph.graph import add_messages
+from datetime import datetime
+from enum import Enum
+import uuid
 
 
 # =============================================================================
@@ -651,4 +654,307 @@ class AgentState(TypedDict):
     conversation_history: List[ConversationRound]  # Tier 2: US1 - Conversational thread view
     current_round_papers_analyst: List[str]  # Tier 2: US1 - Papers discovered by Analyst in current round
     current_round_papers_skeptic: List[str]  # Tier 2: US1 - Papers discovered by Skeptic in current round
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - Enums
+# =============================================================================
+
+class SessionStatus(str, Enum):
+    """Status of a debate session."""
+    ACTIVE = "active"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    ARCHIVED = "archived"
+    DELETED = "deleted"
+
+
+class Permission(str, Enum):
+    """Permission levels for workspace access."""
+    VIEW = "view"
+    EDIT = "edit"
+    ADMIN = "admin"
+
+
+class MemoryPatternType(str, Enum):
+    """Types of memory patterns recognized across sessions."""
+    CLAIM_STRUCTURE = "claim_structure"
+    SKEPTIC_OBJECTION = "skeptic_objection_type"
+    DEBATE_STYLE = "debate_style"
+    EVIDENCE_QUALITY = "evidence_quality"
+    CONVERGENCE_PATTERN = "convergence_pattern"
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - User & Workspace Models
+# =============================================================================
+
+class UserProfile(BaseModel):
+    """
+    User profile for authentication and workspace isolation (Epic 4: Task 2).
+
+    Attributes:
+        user_id: Unique identifier (UUID)
+        username: Display name
+        email: Email address
+        created_at: Account creation timestamp
+        last_login: Last login timestamp
+        preferences: User settings (theme, notification preferences, etc.)
+    """
+    user_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique user identifier")
+    username: str = Field(description="Username (3-50 characters)", min_length=3, max_length=50)
+    email: EmailStr = Field(description="Email address")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Account creation timestamp")
+    last_login: Optional[datetime] = Field(default=None, description="Last login timestamp")
+    preferences: Dict[str, Any] = Field(default_factory=dict, description="User preferences (JSON)")
+
+
+class Workspace(BaseModel):
+    """
+    Workspace for organizing sessions (Epic 4: Task 2).
+
+    Attributes:
+        workspace_id: Unique identifier (UUID)
+        name: Workspace name
+        owner_id: User ID of owner
+        created_at: Creation timestamp
+        description: Workspace description
+        is_public: Whether workspace is publicly accessible
+        settings: Workspace-specific settings
+    """
+    workspace_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique workspace identifier")
+    name: str = Field(description="Workspace name (3-100 characters)", min_length=3, max_length=100)
+    owner_id: str = Field(description="User ID of workspace owner")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
+    description: Optional[str] = Field(default=None, description="Workspace description", max_length=500)
+    is_public: bool = Field(default=False, description="Whether workspace is publicly accessible")
+    settings: Dict[str, Any] = Field(default_factory=dict, description="Workspace settings (JSON)")
+
+
+class WorkspacePermission(BaseModel):
+    """
+    Permission mapping for workspace access (Epic 4: Task 2).
+
+    Attributes:
+        workspace_id: Workspace identifier
+        user_id: User identifier
+        permission: Permission level (view, edit, admin)
+        granted_at: When permission was granted
+        granted_by: User ID who granted permission
+    """
+    workspace_id: str = Field(description="Workspace identifier")
+    user_id: str = Field(description="User identifier")
+    permission: Permission = Field(description="Permission level")
+    granted_at: datetime = Field(default_factory=datetime.utcnow, description="Permission grant timestamp")
+    granted_by: str = Field(description="User ID who granted this permission")
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - Session Models
+# =============================================================================
+
+class SessionMetadata(BaseModel):
+    """
+    Metadata for a debate session (Epic 4: Task 1).
+
+    Attributes:
+        session_id: Unique identifier (UUID)
+        workspace_id: Parent workspace identifier
+        thread_id: LangGraph thread identifier (for checkpoint compatibility)
+        title: User-provided session title
+        original_query: Original research question
+        status: Current session status
+        created_at: Session creation timestamp
+        updated_at: Last update timestamp
+        completed_at: Completion timestamp (if completed)
+        iteration_count: Number of debate iterations
+        final_synthesis_id: ID of final synthesis (if completed)
+        tags: Session tags for categorization
+        metadata: Custom metadata fields
+    """
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique session identifier")
+    workspace_id: str = Field(description="Parent workspace identifier")
+    thread_id: str = Field(description="LangGraph thread identifier")
+    title: str = Field(description="Session title (3-200 characters)", min_length=3, max_length=200)
+    original_query: str = Field(description="Original research question", min_length=10)
+    status: SessionStatus = Field(default=SessionStatus.ACTIVE, description="Session status")
+    created_at: datetime = Field(default_factory=datetime.utcnow, description="Creation timestamp")
+    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update timestamp")
+    completed_at: Optional[datetime] = Field(default=None, description="Completion timestamp")
+    iteration_count: int = Field(default=0, description="Number of debate iterations", ge=0)
+    final_synthesis_id: Optional[str] = Field(default=None, description="ID of final synthesis")
+    tags: List[str] = Field(default_factory=list, description="Session tags")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata")
+
+
+class SessionRecord(BaseModel):
+    """
+    Full session record including state snapshot (Epic 4: Task 1).
+
+    Attributes:
+        session_metadata: Session metadata
+        state_snapshot: Optional snapshot of AgentState
+        debate_moments: List of debate moments in this session
+        created_by: User ID who created the session
+    """
+    session_metadata: SessionMetadata = Field(description="Session metadata")
+    state_snapshot: Optional[Dict[str, Any]] = Field(default=None, description="AgentState snapshot")
+    debate_moments: List['DebateMoment'] = Field(default_factory=list, description="Debate moments")
+    created_by: str = Field(description="User ID who created session")
+
+
+class CreateSessionRequest(BaseModel):
+    """
+    Request to create a new session (Epic 4: Task 1).
+
+    Attributes:
+        workspace_id: Workspace to create session in
+        title: Session title
+        query: Research question
+        tags: Optional session tags
+    """
+    workspace_id: str = Field(description="Workspace identifier")
+    title: str = Field(description="Session title (3-200 characters)", min_length=3, max_length=200)
+    query: str = Field(description="Research question", min_length=10)
+    tags: List[str] = Field(default_factory=list, description="Session tags")
+
+
+class UpdateSessionRequest(BaseModel):
+    """
+    Request to update session metadata (Epic 4: Task 1).
+
+    Attributes:
+        title: Updated session title
+        status: Updated session status
+        tags: Updated session tags
+    """
+    title: Optional[str] = Field(default=None, description="Updated session title", min_length=3, max_length=200)
+    status: Optional[SessionStatus] = Field(default=None, description="Updated session status")
+    tags: Optional[List[str]] = Field(default=None, description="Updated session tags")
+
+
+class SessionListResponse(BaseModel):
+    """
+    Response for listing sessions (Epic 4: Task 1).
+
+    Attributes:
+        sessions: List of session metadata
+        total: Total number of sessions
+        page: Current page number
+        page_size: Page size
+    """
+    sessions: List[SessionMetadata] = Field(description="List of session metadata")
+    total: int = Field(description="Total number of sessions", ge=0)
+    page: int = Field(description="Current page number", ge=1)
+    page_size: int = Field(description="Page size", ge=1, le=100)
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - Memory Models
+# =============================================================================
+
+class DebateMoment(BaseModel):
+    """
+    A single moment in a debate session (Epic 4: Task 3).
+
+    Represents one agent's contribution (thesis, antithesis, or synthesis).
+
+    Attributes:
+        moment_id: Unique identifier (UUID)
+        session_id: Parent session identifier
+        round_number: Debate round number (1-indexed)
+        agent_type: Which agent produced this moment
+        content: The actual content (claim, critique, or synthesis)
+        timestamp: When this moment occurred
+        similarity_score: Similarity to previous moments (for circular detection)
+        is_rejected: Whether this was rejected by the next agent
+        paper_urls: Papers cited in this moment
+        embedding: Vector embedding for semantic search
+    """
+    moment_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique moment identifier")
+    session_id: str = Field(description="Parent session identifier")
+    round_number: int = Field(description="Debate round number", ge=1)
+    agent_type: str = Field(description="Agent type (analyst, skeptic, synthesizer)")
+    content: str = Field(description="Moment content", min_length=10)
+    timestamp: datetime = Field(default_factory=datetime.utcnow, description="Moment timestamp")
+    similarity_score: Optional[float] = Field(default=None, description="Similarity to previous moments", ge=0.0, le=1.0)
+    is_rejected: bool = Field(default=False, description="Whether this was rejected")
+    paper_urls: List[str] = Field(default_factory=list, description="Papers cited in this moment")
+    embedding: Optional[List[float]] = Field(default=None, description="Vector embedding for semantic search")
+
+
+class MemoryPattern(BaseModel):
+    """
+    Recognized pattern across multiple debate sessions (Epic 4: Task 3).
+
+    Patterns are extracted from past debates to improve future reasoning.
+
+    Attributes:
+        pattern_id: Unique identifier (UUID)
+        workspace_id: Parent workspace identifier
+        pattern_type: Type of pattern (claim structure, objection type, etc.)
+        description: Human-readable pattern description
+        frequency: How often this pattern appears
+        last_seen: When this pattern was last observed
+        example_sessions: Session IDs where this pattern appeared
+        embedding: Vector embedding for semantic matching
+        metadata: Additional pattern-specific data
+    """
+    pattern_id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="Unique pattern identifier")
+    workspace_id: str = Field(description="Parent workspace identifier")
+    pattern_type: MemoryPatternType = Field(description="Pattern type")
+    description: str = Field(description="Pattern description", min_length=20, max_length=500)
+    frequency: int = Field(default=1, description="Pattern frequency", ge=1)
+    last_seen: datetime = Field(default_factory=datetime.utcnow, description="Last observation timestamp")
+    example_sessions: List[str] = Field(default_factory=list, description="Example session IDs", max_length=10)
+    embedding: Optional[List[float]] = Field(default=None, description="Vector embedding")
+    metadata: Dict[str, Any] = Field(default_factory=dict, description="Pattern-specific metadata")
+
+
+class MemorySearchRequest(BaseModel):
+    """
+    Request for semantic memory search (Epic 4: Task 4).
+
+    Attributes:
+        query: Search query (claim, question, or keywords)
+        workspace_id: Workspace to search within
+        limit: Maximum results to return
+        similarity_threshold: Minimum similarity score (0-1)
+        pattern_types: Filter by pattern types
+    """
+    query: str = Field(description="Search query", min_length=3)
+    workspace_id: str = Field(description="Workspace identifier")
+    limit: int = Field(default=10, description="Maximum results", ge=1, le=100)
+    similarity_threshold: float = Field(default=0.75, description="Minimum similarity", ge=0.0, le=1.0)
+    pattern_types: Optional[List[MemoryPatternType]] = Field(default=None, description="Filter by pattern types")
+
+
+class MemorySearchResult(BaseModel):
+    """
+    Result from semantic memory search (Epic 4: Task 4).
+
+    Attributes:
+        session_id: Matching session identifier
+        moment: Matching debate moment
+        similarity_score: Similarity to query (0-1)
+        context: Additional context from the session
+    """
+    session_id: str = Field(description="Session identifier")
+    moment: DebateMoment = Field(description="Matching debate moment")
+    similarity_score: float = Field(description="Similarity score", ge=0.0, le=1.0)
+    context: Optional[str] = Field(default=None, description="Additional context")
+
+
+class MemorySearchResponse(BaseModel):
+    """
+    Response for semantic memory search (Epic 4: Task 4).
+
+    Attributes:
+        results: List of matching results
+        query: Original search query
+        total_found: Total number of matches
+    """
+    results: List[MemorySearchResult] = Field(description="Search results")
+    query: str = Field(description="Original query")
+    total_found: int = Field(description="Total matches", ge=0)
 
