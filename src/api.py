@@ -50,8 +50,10 @@ from src.models import (
 from src.tools.paper_discovery import search_arxiv, search_semantic_scholar
 from src.tools.kg_tools import add_papers_to_neo4j
 
-# Epic 4: Import memory store
+# Epic 4: Import memory store, augmentation, and lifecycle management
 from src.tools import memory_store
+from src.tools import memory_augmentation
+from src.tools import lifecycle_management
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1501,6 +1503,420 @@ async def get_workspace_endpoint(
         raise
     except Exception as e:
         logger.error(f"Error retrieving workspace: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - Semantic Search & Pattern Recognition
+# =============================================================================
+
+@app.post(
+    "/memory/search",
+    tags=["Epic 4: Memory"],
+    summary="Semantic search across sessions",
+    description="Search for similar debate moments using semantic similarity. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def search_memory_endpoint(
+    query: str = Query(..., description="Search query"),
+    workspace_id: str = Query(..., description="Workspace identifier"),
+    limit: int = Query(10, description="Maximum results", ge=1, le=100),
+    similarity_threshold: float = Query(0.75, description="Minimum similarity (0-1)", ge=0.0, le=1.0),
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Search for similar debate moments using semantic similarity.
+
+    Epic 4: Task 4 - Query & Retrieval Optimization
+
+    Uses vector embeddings to find moments similar to the query.
+
+    Args:
+        query: Search query (claim, question, or keywords)
+        workspace_id: Workspace to search within
+        limit: Maximum results to return
+        similarity_threshold: Minimum similarity score (0-1)
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Dict with results, query, and total_found
+
+    Raises:
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run memory search in thread pool (it's CPU-intensive)
+        loop = asyncio.get_event_loop()
+        context_items = await loop.run_in_executor(
+            None,
+            memory_augmentation.find_relevant_context,
+            query,
+            workspace_id,
+            limit,
+            similarity_threshold
+        )
+
+        return {
+            "results": context_items,
+            "query": query,
+            "total_found": len(context_items)
+        }
+
+    except Exception as e:
+        logger.error(f"Error searching memory: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post(
+    "/memory/recognize_patterns",
+    tags=["Epic 4: Memory"],
+    summary="Recognize patterns in workspace",
+    description="Analyze recent debate history to recognize patterns. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def recognize_patterns_endpoint(
+    workspace_id: str = Query(..., description="Workspace identifier"),
+    lookback_days: int = Query(30, description="Days to look back", ge=1, le=365),
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Recognize patterns in recent debate history.
+
+    Epic 4: Task 3 - Cross-Session Memory Augmentation
+
+    Analyzes recent debates to identify recurring patterns:
+    - Claim structures that get rejected
+    - Common skeptic objections
+    - Convergence patterns (quick vs. circular)
+
+    Args:
+        workspace_id: Workspace identifier
+        lookback_days: Number of days to look back (default: 30)
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Dict with recognized patterns
+
+    Raises:
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run pattern recognition in thread pool (it's CPU-intensive)
+        loop = asyncio.get_event_loop()
+        patterns = await loop.run_in_executor(
+            None,
+            memory_augmentation.recognize_all_patterns,
+            workspace_id,
+            lookback_days
+        )
+
+        return {
+            "patterns": [
+                {
+                    "pattern_id": p.pattern_id,
+                    "pattern_type": p.pattern_type.value,
+                    "description": p.description,
+                    "frequency": p.frequency,
+                    "last_seen": p.last_seen.isoformat(),
+                    "example_sessions": p.example_sessions,
+                    "metadata": p.metadata
+                }
+                for p in patterns
+            ],
+            "total_patterns": len(patterns),
+            "workspace_id": workspace_id,
+            "lookback_days": lookback_days
+        }
+
+    except Exception as e:
+        logger.error(f"Error recognizing patterns: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.get(
+    "/memory/compress_session/{session_id}",
+    tags=["Epic 4: Memory"],
+    summary="Compress session",
+    description="Create a compressed summary of a debate session. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def compress_session_endpoint(
+    session_id: str,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Compress a session by summarizing key moments.
+
+    Epic 4: Task 3 - Cross-Session Memory Augmentation
+
+    Creates a compressed representation of a debate session:
+    - Key claims and objections
+    - Final synthesis
+    - Metadata (iteration count, papers cited)
+
+    Args:
+        session_id: Session identifier
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Compressed session data
+
+    Raises:
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run compression in thread pool
+        loop = asyncio.get_event_loop()
+        compressed = await loop.run_in_executor(
+            None,
+            memory_augmentation.compress_session,
+            session_id
+        )
+
+        if not compressed:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{session_id}' not found or has no moments"
+            )
+
+        return compressed
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error compressing session: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+# =============================================================================
+# Epic 4: Persistent Memory System - Lifecycle Management
+# =============================================================================
+
+@app.post(
+    "/lifecycle/archive",
+    tags=["Epic 4: Lifecycle"],
+    summary="Archive old sessions",
+    description="Archive sessions older than retention period. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def archive_sessions_endpoint(
+    workspace_id: str = Query(..., description="Workspace identifier"),
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Archive old sessions based on retention policy.
+
+    Epic 4: Task 5 - Lifecycle & Archival
+
+    Archives completed sessions older than MEMORY_RETENTION_DAYS (default: 90).
+
+    Args:
+        workspace_id: Workspace identifier
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Dict with archived count and failed count
+
+    Raises:
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run archival in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lifecycle_management.archive_old_sessions,
+            workspace_id
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error archiving sessions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post(
+    "/lifecycle/cleanup",
+    tags=["Epic 4: Lifecycle"],
+    summary="Cleanup deleted sessions",
+    description="Cleanup deleted sessions. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def cleanup_sessions_endpoint(
+    workspace_id: str = Query(..., description="Workspace identifier"),
+    permanent: bool = Query(False, description="Permanently delete (use with caution)"),
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Cleanup deleted sessions.
+
+    Epic 4: Task 5 - Lifecycle & Archival
+
+    By default, only counts deleted sessions (dry run).
+    Set permanent=true to actually remove them.
+
+    Args:
+        workspace_id: Workspace identifier
+        permanent: If true, permanently delete sessions
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Dict with cleanup summary
+
+    Raises:
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run cleanup in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lifecycle_management.cleanup_deleted_sessions,
+            workspace_id,
+            permanent
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error cleaning up sessions: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.get(
+    "/lifecycle/export/{session_id}",
+    tags=["Epic 4: Lifecycle"],
+    summary="Export session to JSON",
+    description="Export session data to JSON format. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def export_session_endpoint(
+    session_id: str,
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Export a session to JSON format.
+
+    Epic 4: Task 5 - Lifecycle & Archival
+
+    Exports complete session data including metadata and all debate moments.
+
+    Args:
+        session_id: Session identifier
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Complete session data in JSON format
+
+    Raises:
+        404: Session not found
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run export in thread pool
+        loop = asyncio.get_event_loop()
+        export_data = await loop.run_in_executor(
+            None,
+            lifecycle_management.export_session_to_json,
+            session_id
+        )
+
+        if not export_data:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Session '{session_id}' not found"
+            )
+
+        return export_data
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error exporting session: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
+
+
+@app.post(
+    "/lifecycle/backup",
+    tags=["Epic 4: Lifecycle"],
+    summary="Create workspace backup",
+    description="Create a backup of all sessions in a workspace. Requires X-API-Key header.",
+    response_model=Dict[str, Any]
+)
+async def backup_workspace_endpoint(
+    workspace_id: str = Query(..., description="Workspace identifier"),
+    backup_dir: str = Query("./backups", description="Backup directory path"),
+    api_key: str = Depends(get_api_key)
+) -> Dict[str, Any]:
+    """
+    Create a backup of all sessions in a workspace.
+
+    Epic 4: Task 5 - Lifecycle & Archival
+
+    Exports all sessions to JSON files in the backup directory.
+
+    Args:
+        workspace_id: Workspace identifier
+        backup_dir: Directory to save backup files (default: ./backups)
+        api_key: API key from X-API-Key header
+
+    Returns:
+        Dict with backup summary
+
+    Raises:
+        500: Internal server error
+    """
+    try:
+        import asyncio
+
+        # Run backup in thread pool
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            lifecycle_management.create_workspace_backup,
+            workspace_id,
+            backup_dir
+        )
+
+        return result
+
+    except Exception as e:
+        logger.error(f"Error creating backup: {e}")
         raise HTTPException(
             status_code=500,
             detail=f"Internal server error: {str(e)}"
