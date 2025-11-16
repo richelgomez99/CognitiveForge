@@ -676,7 +676,8 @@ class PaperScore(BaseModel):
     relevance_score: float = Field(description="Relevance to query (0-1)", ge=0.0, le=1.0)
     quality_score: float = Field(description="Quality score (0-1)", ge=0.0, le=1.0)
     citation_count: int = Field(description="Citation count", ge=0)
-    rank: int = Field(description="Rank in curated list", ge=1)
+    rank: int = Field(description="Rank in curated list", ge=0)  # 0 = unranked
+    combined_score: float = Field(default=0.0, description="Combined relevance + quality score", ge=0.0, le=1.0)
 
 
 class CurationReport(BaseModel):
