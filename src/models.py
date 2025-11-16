@@ -655,6 +655,103 @@ class AgentState(TypedDict):
     current_round_papers_analyst: List[str]  # Tier 2: US1 - Papers discovered by Analyst in current round
     current_round_papers_skeptic: List[str]  # Tier 2: US1 - Papers discovered by Skeptic in current round
 
+    # Epic 5: 10-Agent Architecture - New agent outputs
+    curated_papers: Optional[List[str]]  # Paper Curator: Ranked paper URLs
+    evidence_validation_report: Optional[Dict[str, Any]]  # Evidence Validator: Alignment scores
+    bias_detection_report: Optional[Dict[str, Any]]  # Bias Detector: Detected biases
+    consistency_check_report: Optional[Dict[str, Any]]  # Consistency Checker: Historical consistency
+    counter_perspectives: Optional[List[str]]  # Counter-Perspective: Alternative viewpoints
+    novelty_assessment: Optional[Dict[str, Any]]  # Novelty Assessor: Innovation scores
+    synthesis_review: Optional[Dict[str, Any]]  # Synthesis Reviewer: QA results
+
+
+# =============================================================================
+# Epic 5: 10-Agent Architecture - Agent Output Models
+# =============================================================================
+
+class PaperScore(BaseModel):
+    """Score for a curated paper."""
+    url: str = Field(description="Paper URL")
+    title: str = Field(description="Paper title")
+    relevance_score: float = Field(description="Relevance to query (0-1)", ge=0.0, le=1.0)
+    quality_score: float = Field(description="Quality score (0-1)", ge=0.0, le=1.0)
+    citation_count: int = Field(description="Citation count", ge=0)
+    rank: int = Field(description="Rank in curated list", ge=1)
+
+
+class CurationReport(BaseModel):
+    """Output from Paper Curator agent."""
+    curated_papers: List[PaperScore] = Field(description="Ranked papers")
+    total_discovered: int = Field(description="Total papers discovered", ge=0)
+    filtered_count: int = Field(description="Papers filtered out", ge=0)
+    avg_quality: float = Field(description="Average quality score", ge=0.0, le=1.0)
+
+
+class EvidenceAlignment(BaseModel):
+    """Alignment assessment for one evidence item."""
+    evidence_url: str = Field(description="Evidence source URL")
+    claim_excerpt: str = Field(description="Relevant claim excerpt", max_length=200)
+    alignment_score: float = Field(description="Alignment strength (0-1)", ge=0.0, le=1.0)
+    alignment_category: str = Field(description="strong | medium | weak")
+    reasoning: str = Field(description="Alignment reasoning", max_length=300)
+
+
+class ValidationReport(BaseModel):
+    """Output from Evidence Validator agent."""
+    alignments: List[EvidenceAlignment] = Field(description="Per-evidence alignments")
+    overall_strength: float = Field(description="Overall evidence strength (0-1)", ge=0.0, le=1.0)
+    strong_count: int = Field(description="Count of strong alignments", ge=0)
+    weak_count: int = Field(description="Count of weak alignments", ge=0)
+    recommendation: str = Field(description="Validation recommendation", max_length=200)
+
+
+class DetectedBias(BaseModel):
+    """Single detected bias."""
+    bias_type: str = Field(description="Type of bias (selection, methodological, etc.)")
+    confidence: float = Field(description="Detection confidence (0-1)", ge=0.0, le=1.0)
+    description: str = Field(description="Bias description", max_length=300)
+    affected_papers: List[str] = Field(description="URLs of affected papers")
+
+
+class BiasReport(BaseModel):
+    """Output from Bias Detector agent."""
+    detected_biases: List[DetectedBias] = Field(description="Detected biases")
+    bias_score: float = Field(description="Overall bias score (0-1, higher=more bias)", ge=0.0, le=1.0)
+    recommendation: str = Field(description="Balancing recommendation", max_length=200)
+
+
+class ConsistencyCheck(BaseModel):
+    """Output from Consistency Checker agent."""
+    similar_past_claims: List[str] = Field(description="Similar claims from past sessions")
+    contradiction_found: bool = Field(description="Whether contradicts past claims")
+    consistency_score: float = Field(description="Consistency score (0-1)", ge=0.0, le=1.0)
+    recommendation: str = Field(description="Consistency recommendation", max_length=200)
+
+
+class CounterPerspectiveItem(BaseModel):
+    """Single counter-perspective."""
+    perspective: str = Field(description="Alternative viewpoint", max_length=500)
+    supporting_evidence: List[str] = Field(description="URLs supporting this perspective")
+    strength: float = Field(description="Perspective strength (0-1)", ge=0.0, le=1.0)
+
+
+class NoveltyAssessment(BaseModel):
+    """Output from Novelty Assessor agent."""
+    novelty_score: float = Field(description="Independent novelty score (0-100)", ge=0.0, le=100.0)
+    innovation_factors: List[str] = Field(description="Factors contributing to novelty")
+    comparison_to_baseline: str = Field(description="How this differs from existing work", max_length=300)
+    assessment_confidence: float = Field(description="Assessment confidence (0-1)", ge=0.0, le=1.0)
+
+
+class SynthesisReview(BaseModel):
+    """Output from Synthesis Reviewer agent."""
+    qa_passed: bool = Field(description="Whether synthesis passes QA")
+    quality_score: float = Field(description="Overall quality (0-100)", ge=0.0, le=100.0)
+    consistency_check: bool = Field(description="Internal consistency validated")
+    evidence_check: bool = Field(description="Evidence lineage validated")
+    issues_found: List[str] = Field(description="Issues requiring attention")
+    recommendation: str = Field(description="Accept | Revise | Reject")
+
 
 # =============================================================================
 # Epic 4: Persistent Memory System - Enums
