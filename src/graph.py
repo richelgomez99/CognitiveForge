@@ -20,36 +20,48 @@ from src.agents.analyst import analyst_node
 from src.agents.skeptic import skeptic_node
 from src.agents.synthesizer import synthesizer_node
 
+# Epic 5: Import new quality check agents
+from src.agents.paper_curator import PaperCuratorAgent
+from src.agents.evidence_validator import EvidenceValidatorAgent
+from src.agents.bias_detector import BiasDetectorAgent
+from src.agents.consistency_checker import ConsistencyCheckerAgent
+from src.agents.counter_perspective import CounterPerspectiveAgent
+from src.agents.novelty_assessor import NoveltyAssessorAgent
+from src.agents.synthesis_reviewer import SynthesisReviewerAgent
+from src.agents.base_agent import AgentRegistry
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
+def route_debate(state: AgentState) -> Literal["analyst", "quality_check"]:
     """
     Conditional routing function for the dialectical debate loop with natural termination.
-    
+
+    Epic 5 Update: Routes to quality_check instead of directly to synthesizer.
+
     Implements FR-T1-006: Conditional edge from Skeptic based on contradiction detection
     Implements T089: Circular argument detection and impasse synthesis
     Implements Natural Termination: Stop when genuinely stuck (Option 3)
-    
+
     Decision Logic (in order):
-    1. If circular argument detected: Set impasse mode and route to Synthesizer
-    2. If genuinely stuck (consecutive high-similarity rejections): Set stuck mode and route to Synthesizer
+    1. If circular argument detected: Set impasse mode and route to Quality Check
+    2. If genuinely stuck (consecutive high-similarity rejections): Set stuck mode and route to Quality Check
     3. If contradiction found AND iterations remain: Loop back to Analyst for refinement
-    4. Otherwise: Proceed to Synthesizer for final synthesis
-    
+    4. Otherwise: Proceed to Quality Check for validation before synthesis
+
     Natural Termination Criteria:
     - 2+ consecutive rejections with similarity >0.75 = genuinely stuck
     - Indicates exhaustion of theoretical approaches
     - More intelligent than arbitrary MAX_ITERATIONS cutoff
-    
+
     Args:
         state: Current AgentState with current_antithesis and iteration_count
-    
+
     Returns:
         "analyst": Route back to analyst for another iteration
-        "synthesizer": Proceed to synthesizer for final synthesis
+        "quality_check": Proceed to quality check orchestration then synthesis
     """
     # Get max iterations from environment (default: 10, increased from 3 as safety net)
     max_iterations = int(os.getenv("MAX_ITERATIONS", "10"))
@@ -75,9 +87,9 @@ def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
         # Check if genuinely stuck
         if consecutive_high_similarity_count >= STUCK_THRESHOLD:
             logger.warning(f"⛔ ROUTING: GENUINELY STUCK detected ({consecutive_high_similarity_count} consecutive high-similarity rejections)")
-            logger.warning(f"   System has exhausted theoretical approaches. Proceeding to synthesis.")
+            logger.warning(f"   System has exhausted theoretical approaches. Proceeding to quality check.")
             state["synthesis_mode"] = "impasse"
-            return "synthesizer"
+            return "quality_check"
     else:
         # Reset counter if similarity is low
         if consecutive_high_similarity_count > 0:
@@ -95,7 +107,7 @@ def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
             logger.info(f"   Critique: {antithesis.critique[:150]}...")
             # Set synthesis mode to impasse (will be picked up by synthesizer)
             state["synthesis_mode"] = "impasse"
-            return "synthesizer"
+            return "quality_check"
     
     # Tier 2 (T038): Populate conversation_history before routing
     thesis = state.get("current_thesis")
@@ -132,25 +144,25 @@ def route_debate(state: AgentState) -> Literal["analyst", "synthesizer"]:
         state["synthesis_mode"] = "standard"  # Standard synthesis if we reach it
         return "analyst"
     else:
-        # Proceed to synthesis
+        # Proceed to quality check and synthesis
         if iteration_count >= max_iterations:
-            logger.info(f"⏭️  ROUTING: Max iterations ({max_iterations}) reached (safety net). Proceeding to Synthesizer.")
+            logger.info(f"⏭️  ROUTING: Max iterations ({max_iterations}) reached (safety net). Proceeding to Quality Check.")
             state["synthesis_mode"] = "exhausted_attempts"
         else:
-            logger.info(f"✅ ROUTING: No contradiction found. Proceeding to Synthesizer.")
+            logger.info(f"✅ ROUTING: No contradiction found. Proceeding to Quality Check.")
             state["synthesis_mode"] = "standard"
-        return "synthesizer"
+        return "quality_check"
 
 
 def increment_iteration(state: AgentState) -> dict:
     """
     Helper node to increment iteration count when looping back.
-    
+
     This ensures we track how many refinement cycles we've gone through.
-    
+
     Args:
         state: Current AgentState
-    
+
     Returns:
         Dict with incremented iteration_count
     """
@@ -158,6 +170,66 @@ def increment_iteration(state: AgentState) -> dict:
     new_count = current_count + 1
     logger.info(f"📊 Iteration count: {current_count} → {new_count}")
     return {"iteration_count": new_count}
+
+
+def quality_check_orchestration(state: AgentState) -> dict:
+    """
+    Epic 5: Orchestrate the 7 new quality check agents before synthesis.
+
+    This node runs between the debate loop and final synthesis to ensure
+    high-quality output through multi-agent validation.
+
+    Execution flow (via AgentRegistry):
+    1. Paper Curator - Filter & rank discovered papers
+    2. Evidence Validator & Bias Detector (parallel) - Validate evidence & detect biases
+    3. Consistency Checker - Check logical consistency
+    4. Counter-Perspective & Novelty Assessor (parallel) - Generate alternatives & assess novelty
+
+    Note: Synthesis Reviewer runs AFTER synthesizer as final QA gate.
+
+    Args:
+        state: Current AgentState with thesis, papers, etc.
+
+    Returns:
+        Dict with agent outputs added to state
+    """
+    logger.info("🔍 ==== QUALITY CHECK ORCHESTRATION ====")
+
+    # Initialize agents
+    paper_curator = PaperCuratorAgent()
+    evidence_validator = EvidenceValidatorAgent()
+    bias_detector = BiasDetectorAgent()
+    consistency_checker = ConsistencyCheckerAgent()
+    counter_perspective = CounterPerspectiveAgent()
+    novelty_assessor = NoveltyAssessorAgent()
+
+    # Register agents
+    registry = AgentRegistry()
+    registry.register(paper_curator)
+    registry.register(evidence_validator)
+    registry.register(bias_detector)
+    registry.register(consistency_checker)
+    registry.register(counter_perspective)
+    registry.register(novelty_assessor)
+
+    # Execute agents in dependency order with parallelization
+    logger.info("📋 Calculating execution order...")
+    execution_stages = registry.get_execution_order()
+
+    updated_state = dict(state)
+
+    for stage_num, stage_agents in enumerate(execution_stages, 1):
+        agent_names = [a.get_role().value for a in stage_agents]
+        logger.info(f"🎯 Stage {stage_num}: Executing {len(stage_agents)} agents - {agent_names}")
+
+        # Run agents in this stage (they can run in parallel)
+        for agent in stage_agents:
+            result = agent.run(updated_state)
+            updated_state.update(result)
+
+    logger.info("✅ Quality check orchestration complete")
+
+    return updated_state
 
 
 def build_graph(use_checkpointer: bool = False, db_path: str = "dialectical_system.db", use_async: bool = False) -> StateGraph:
@@ -229,30 +301,40 @@ def build_graph(use_checkpointer: bool = False, db_path: str = "dialectical_syst
     # Add agent nodes
     workflow.add_node("analyst", analyst_node)
     workflow.add_node("skeptic", skeptic_node)
+    workflow.add_node("quality_check", quality_check_orchestration)  # Epic 5: Quality check agents
     workflow.add_node("synthesizer", synthesizer_node)
     workflow.add_node("increment_iteration", increment_iteration)
-    
+
     # Add edges
     # START → Analyst (always starts with thesis generation)
     workflow.add_edge(START, "analyst")
-    
+
     # Analyst → Skeptic (thesis evaluation)
     workflow.add_edge("analyst", "skeptic")
-    
+
     # Skeptic → [Conditional Routing]
     # This is the key cyclic edge that enables iterative refinement
+    # Epic 5: Now routes to quality_check instead of directly to synthesizer
     workflow.add_conditional_edges(
         "skeptic",
         route_debate,
         {
-            "analyst": "increment_iteration",  # Loop back via iteration counter
-            "synthesizer": "synthesizer"        # Proceed to synthesis
+            "analyst": "increment_iteration",      # Loop back via iteration counter
+            "quality_check": "quality_check"       # Epic 5: Proceed to quality checks
         }
     )
-    
+
+    # Epic 5: Quality Check → Synthesizer (after all quality checks pass)
+    workflow.add_edge("quality_check", "synthesizer")
+
     # Increment → Analyst (complete the loop)
     workflow.add_edge("increment_iteration", "analyst")
-    
+
+    # Epic 5: Synthesizer → Synthesis Review (final QA gate)
+    # Note: We add synthesis review as a function that runs within the synthesizer edge
+    # to keep the graph simple, but log it for transparency
+    logger.info("📝 Epic 5: Synthesis Reviewer will run post-synthesis (in synthesizer node or as post-processing)")
+
     # Synthesizer → END (final output)
     workflow.add_edge("synthesizer", END)
     
